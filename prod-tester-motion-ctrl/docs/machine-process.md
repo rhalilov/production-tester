@@ -17,6 +17,116 @@ positions, timings) without risk of breaking the underlying logic.
    enforced by the system.
 3. **Multi-mode** — supports automatic, step-by-step, retry, and repetitive operation
    within the same sequence definition.
+4. **Multi-level configuration** — three distinct configuration levels with different
+   access requirements (see Configuration Levels below).
+
+---
+
+## Configuration Levels
+
+The system has three levels of configuration, each with different access rights and
+performed at different stages of the machine lifecycle:
+
+### Level 1: Factory Calibration
+
+**Performed by:** Machine builder / maintenance technician  
+**When:** After machine assembly, after mechanical maintenance, after sensor replacement  
+**Access:** Protected (requires service password or hardware jumper)
+
+Defines the physical geometry of the machine — where sensors are physically mounted,
+mechanical travel limits, and reference offsets. These values change only when the
+hardware changes.
+
+| Parameter | Unit | Description |
+|-----------|------|-------------|
+| home_sensor_offset_axis2 | mm | Distance from Axis2 home sensor to mechanical zero |
+| home_sensor_offset_axis3 | mm | Distance from Axis3 home sensor to mechanical zero |
+| laser1_position | mm | Entry laser mounting position along conveyor |
+| laser2_position | mm | Middle laser mounting position along conveyor |
+| laser3_position | mm | Exit laser mounting position along conveyor |
+| axis2_travel_min | mm | Minimum width (mechanical limit) |
+| axis2_travel_max | mm | Maximum width (mechanical limit) |
+| axis3_travel_min | mm | Maximum head descent (mechanical limit) |
+| axis3_travel_max | mm | Maximum head ascent (mechanical limit) |
+| steps_per_mm_axis1 | steps/mm | Conveyor linear calibration |
+| steps_per_mm_axis2 | steps/mm | Width axis linear calibration |
+| steps_per_mm_axis3 | steps/mm | Head axis linear calibration |
+
+These values are stored in flash and survive firmware updates.
+
+### Level 2: Product Setup (Recipe)
+
+**Performed by:** Process engineer  
+**When:** When introducing a new PCB type, or modifying test parameters  
+**Access:** Engineer-level password
+
+Defines all parameters for a specific PCB product. A machine can store multiple
+recipes (one per PCB type) and switch between them.
+
+| Parameter | Unit | Description |
+|-----------|------|-------------|
+| board_width | mm | Conveyor width for this PCB |
+| use_rfid | bool | Whether bottom RFID mechanism is used |
+| pos_prepin | mm | Head pre-pin position (centering pins clear of board) |
+| pos_pin_entry | mm | Head position where centering pins engage |
+| pos_full_contact | mm | Head position for full needle pressure |
+| fast_approach_rpm | rpm | Head speed: home/park → pre-pin |
+| fast_approach_accel | rpm/s | Head acceleration for fast phase |
+| pin_engage_rpm | rpm | Head speed: pre-pin → pin-entry |
+| pin_engage_accel | rpm/s | Head acceleration for pin engagement |
+| contact_rpm | rpm | Head speed: pin-entry → full-contact |
+| contact_accel | rpm/s | Head acceleration for contact phase |
+| convey_rpm | rpm | Conveyor infeed speed |
+| convey_accel | rpm/s | Conveyor acceleration |
+| creep_rpm | rpm | Conveyor slow approach speed |
+| creep_distance | mm | Distance from middle laser to stopper contact |
+| outfeed_rpm | rpm | Conveyor outfeed speed |
+| eject_extra | mm | Extra travel after exit laser (ensure board fully out) |
+| retry_reverse | mm | Reverse distance for retry mode |
+| laser_debounce_ms | ms | Hold time for laser triggers (ignore holes in PCB) |
+| test_timeout_s | s | Maximum time to wait for test result from tester |
+| repetitive_count | int | Number of cycles in repetitive mode (0 = infinite) |
+
+**Laser debounce:** PCBs can have holes or cutouts that momentarily break the laser
+beam. The `laser_debounce_ms` parameter defines how long the laser must remain
+continuously triggered before the system accepts it as a valid "board present" event.
+This prevents false triggers from holes passing through the beam.
+
+### Level 3: Operator Adjustment
+
+**Performed by:** Production operator  
+**When:** During production, for fine-tuning  
+**Access:** No password required (limited parameter set)
+
+Operators can only adjust a subset of parameters within bounds defined by the process
+engineer in Level 2. Typical operator-accessible parameters:
+
+- Conveyor speed (within ±20% of recipe value)
+- Test timeout extension
+- Repetitive cycle count
+
+All other parameters are read-only for operators. The system displays current values
+but rejects modification attempts outside the allowed set or range.
+
+---
+
+## Motor Speed and Acceleration Profiles
+
+All motors (not just the head) support configurable speed AND acceleration per motion
+segment. In other machines, motors may serve entirely different purposes (rotary
+tables, pick-and-place axes, press mechanisms), but the principle is the same:
+
+Each motion command specifies:
+- **Target speed (rpm)** — the steady-state velocity
+- **Acceleration (rpm/s)** — how quickly to reach target speed (ramp-up/ramp-down)
+
+This allows smooth motion profiles:
+- Conveyor: gentle start to avoid board slippage, gentle stop to avoid overshoot
+- Head: fast approach with sharp deceleration near the board
+- Width: slow, controlled move to avoid damage
+
+The acceleration parameter is part of the recipe (Level 2) and bounded by factory
+calibration (Level 1) limits that protect the mechanical system.
 
 ---
 
