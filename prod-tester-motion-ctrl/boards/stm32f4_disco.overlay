@@ -1,0 +1,169 @@
+/*
+ * prod-tester-motion-ctrl — STM32F407 Discovery on the Shelly "Main"
+ * test-fixture board. Pin map: hw_docs/PIN_map_v5.csv (canonical).
+ *
+ * 3 step/dir/ena output banks drive 4 step-servo drives; banks 1 and 2
+ * drive one motor each, bank 3 drives two SYNCHRONOUS motors in parallel
+ * (same pulse train). Each of the 4 drives reports ALM+ (alarm); only
+ * drives 3 and 4 (head) report PEND+ (position end). 11 process sensors
+ * (PNP) + SMEMA conveyor handshake.
+ *
+ *   Bank   STEP(PLS-)   DIR-     ENA-     PEND+    ALM+
+ *   1      PE5          PE2      PB8      -        PE4
+ *   2      PB7          PD6      PD3      -        PB6
+ *   3      PC8          PC9      PC6      PD2      PC11   (motor 3)
+ *   3*     (shared)     -        -        PA15     PA8    (motor 4)
+ *
+ * MCU pin HIGH -> NPN sink ON -> drive opto energised = asserted.
+ */
+
+/* ---- Free pins the board otherwise claims ----------------------------- */
+&i2c1   { status = "disabled"; };
+&i2s3   { status = "disabled"; };
+&plli2s { status = "disabled"; };
+&can1   { status = "disabled"; };
+&can2   { status = "disabled"; };
+
+/* ---- Clock: HSI self-clocked (mini-USB = debug only) ------------------ */
+&clk_hsi { status = "okay"; };
+&pll {
+	div-m  = <16>;
+	mul-n  = <336>;
+	div-p  = <2>;
+	div-q  = <7>;
+	clocks = <&clk_hsi>;
+	status = "okay";
+};
+&clk_hse { status = "disabled"; };
+
+/* ---- Watchdog --------------------------------------------------------- */
+&iwdg { status = "okay"; };
+
+/* ---- Persistent settings (ZMS) ---------------------------------------- */
+&flash0 {
+	partitions {
+		compatible = "fixed-partitions";
+		#address-cells = <1>;
+		#size-cells = <1>;
+		storage_partition: partition@a0000 {
+			label = "storage";
+			reg = <0x000a0000 0x00060000>;   /* 384K: sectors 9-11 */
+		};
+	};
+};
+
+/* ---- Console: USB-CDC-ACM (OTG-FS, micro-USB CN5) --------------------- */
+&zephyr_udc0 {
+	cdc_acm_uart0: cdc_acm_uart0 {
+		compatible = "zephyr,cdc-acm-uart";
+	};
+};
+/ {
+	chosen {
+		zephyr,console    = &cdc_acm_uart0;
+		zephyr,shell-uart = &cdc_acm_uart0;
+	};
+};
+&usart2 { status = "disabled"; };
+
+/* ---- USART3: tester communication (PD8 TX, PD9 RX) ------------------- */
+&usart3 {
+	pinctrl-0 = <&usart3_tx_pd8 &usart3_rx_pd9>;
+	pinctrl-names = "default";
+	current-speed = <115200>;
+	status = "okay";
+};
+
+/* ---- Step-timing counters (one per bank) ------------------------------ */
+&timers2 {
+	status = "okay";
+	st,prescaler = <0>;
+	axis1_counter: counter { compatible = "st,stm32-counter"; status = "okay"; };
+};
+&timers5 {
+	status = "okay";
+	st,prescaler = <0>;
+	axis3_counter: counter { compatible = "st,stm32-counter"; status = "okay"; };
+};
+&timers3 {
+	status = "okay";
+	st,prescaler = <0>;
+	axis2_counter: counter { compatible = "st,stm32-counter"; status = "okay"; };
+};
+
+/ {
+	aliases {
+		stepper = &axis1;
+	};
+
+	/* ENA lines: GPIO_ACTIVE_LOW (logical 1 = enabled = pin LOW) */
+	motor_enables {
+		compatible = "gpio-leds";
+		ena1: ena1 { gpios = <&gpiob 8 GPIO_ACTIVE_LOW>; label = "ENA1"; };
+		ena2: ena2 { gpios = <&gpiod 3 GPIO_ACTIVE_LOW>; label = "ENA2"; };
+		ena3: ena3 { gpios = <&gpioc 6 GPIO_ACTIVE_LOW>; label = "ENA3"; };
+	};
+
+	/* 3 double-solenoid bistable valves (SMC SY3220-5LOU) */
+	solenoids {
+		compatible = "gpio-leds";
+		sol1_a: sol1_a { gpios = <&gpiob 12 GPIO_ACTIVE_HIGH>; label = "SOL1_A"; };
+		sol1_b: sol1_b { gpios = <&gpiob 13 GPIO_ACTIVE_HIGH>; label = "SOL1_B"; };
+		sol2_a: sol2_a { gpios = <&gpiob 14 GPIO_ACTIVE_HIGH>; label = "SOL2_A"; };
+		sol2_b: sol2_b { gpios = <&gpiob 15 GPIO_ACTIVE_HIGH>; label = "SOL2_B"; };
+		sol3_a: sol3_a { gpios = <&gpiod 10 GPIO_ACTIVE_HIGH>; label = "SOL3_A"; };
+		sol3_b: sol3_b { gpios = <&gpiod 11 GPIO_ACTIVE_HIGH>; label = "SOL3_B"; };
+	};
+
+	/* 3 step/dir banks */
+	axis1: axis1 {
+		compatible = "zephyr,gpio-step-dir-stepper";
+		step-gpios = <&gpioe 5 GPIO_ACTIVE_HIGH>;
+		dir-gpios  = <&gpioe 2 GPIO_ACTIVE_LOW>;
+		counter    = <&axis1_counter>;
+	};
+	axis2: axis2 {
+		compatible = "zephyr,gpio-step-dir-stepper";
+		step-gpios = <&gpiob 7 GPIO_ACTIVE_HIGH>;
+		dir-gpios  = <&gpiod 6 GPIO_ACTIVE_HIGH>;
+		counter    = <&axis2_counter>;
+	};
+	axis3: axis3 {
+		compatible = "zephyr,gpio-step-dir-stepper";
+		step-gpios = <&gpioc 8 GPIO_ACTIVE_HIGH>;
+		dir-gpios  = <&gpioc 9 GPIO_ACTIVE_HIGH>;
+		counter    = <&axis3_counter>;
+	};
+
+	zephyr,user {
+		/* 11 process sensors (3 laser + 6 inductive + 2 photo-electric) */
+		laser1-gpios     = <&gpioc  5 (GPIO_ACTIVE_LOW | GPIO_PULL_UP)>;
+		laser2-gpios     = <&gpiob  1 (GPIO_ACTIVE_LOW | GPIO_PULL_UP)>;
+		laser3-gpios     = <&gpiob  0 (GPIO_ACTIVE_LOW | GPIO_PULL_UP)>;
+		inductive4-gpios = <&gpiob  2 (GPIO_ACTIVE_HIGH | GPIO_PULL_DOWN)>;
+		inductive5-gpios = <&gpioe  7 (GPIO_ACTIVE_HIGH | GPIO_PULL_DOWN)>;
+		inductive6-gpios = <&gpioe  9 (GPIO_ACTIVE_HIGH | GPIO_PULL_DOWN)>;
+		inductive7-gpios = <&gpioe 10 (GPIO_ACTIVE_HIGH | GPIO_PULL_DOWN)>;
+		inductive8-gpios = <&gpioe 12 (GPIO_ACTIVE_HIGH | GPIO_PULL_DOWN)>;
+		inductive9-gpios = <&gpioe 13 (GPIO_ACTIVE_HIGH | GPIO_PULL_DOWN)>;
+		photo10-gpios    = <&gpioe 14 (GPIO_ACTIVE_HIGH | GPIO_PULL_DOWN)>;
+		photo11-gpios    = <&gpioe 15 (GPIO_ACTIVE_HIGH | GPIO_PULL_DOWN)>;
+
+		/* Drive ALM+ feedback (open-collector: idle high, asserted low) */
+		alm1-gpios = <&gpioe  4 (GPIO_ACTIVE_LOW | GPIO_PULL_UP)>;
+		alm2-gpios = <&gpiob  6 (GPIO_ACTIVE_LOW | GPIO_PULL_UP)>;
+		alm3-gpios = <&gpioc 11 (GPIO_ACTIVE_LOW | GPIO_PULL_UP)>;
+		alm4-gpios = <&gpioa  8 (GPIO_ACTIVE_LOW | GPIO_PULL_UP)>;
+
+		/* Drive PEND+ feedback (only head motors 3+4) */
+		pend3-gpios = <&gpiod  2 (GPIO_ACTIVE_LOW | GPIO_PULL_UP)>;
+		pend4-gpios = <&gpioa 15 (GPIO_ACTIVE_LOW | GPIO_PULL_UP)>;
+
+		/* SMEMA conveyor handshake */
+		smema-up-board-available-gpios   = <&gpioc 1 (GPIO_ACTIVE_LOW | GPIO_PULL_UP)>;
+		smema-up-machine-ready-gpios     = <&gpioc 2 GPIO_ACTIVE_HIGH>;
+		smema-down-board-available-gpios = <&gpioc 3 GPIO_ACTIVE_HIGH>;
+		smema-down-machine-ready-gpios   = <&gpioa 1 (GPIO_ACTIVE_LOW | GPIO_PULL_UP)>;
+		smema-down-board-available-fail-gpios = <&gpioa 3 GPIO_ACTIVE_HIGH>;
+	};
+};

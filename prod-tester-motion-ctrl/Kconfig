@@ -1,0 +1,35 @@
+mainmenu "Production Tester Motion Controller"
+
+choice MACHINE_TYPE
+    prompt "Target machine"
+    default MACHINE_INFEED_TESTER
+
+config MACHINE_INFEED_TESTER
+    bool "Infeed PCB tester (Shelly)"
+    help
+      Infeed conveyor-based PCB test fixture with 3 axis banks (4 motors),
+      3 cylinders, SMEMA handshake, and 11 sensors.
+
+endchoice
+
+config SCAN_PERIOD_MS
+    int "SFC engine scan period (ms)"
+    default 5
+    range 1 50
+    help
+      Cyclic scan interval for the SFC engine. Lower = faster response,
+      higher CPU load.
+
+config CYLINDER_CONFIRM_TIMEOUT_MS
+    int "Default cylinder confirm timeout (ms)"
+    default 10000
+    range 1000 60000
+    help
+      Maximum time to wait for a cylinder position sensor to confirm.
+      Set high for commissioning, low for production.
+
+config MOTOR_STEPS_PER_REV
+    int "Stepper motor steps per revolution"
+    default 2000
+    help
+      Microstep setting on the drives (P001 on HBS57/SS86D).
