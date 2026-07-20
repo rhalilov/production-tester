@@ -3,7 +3,7 @@
 #include <stdint.h>
 #include <stdbool.h>
 #include <zephyr/drivers/gpio.h>
-#include <zephyr/drivers/stepper.h>
+#include <zephyr/drivers/stepper/stepper_ctrl.h>
 
 namespace component {
 
@@ -129,7 +129,8 @@ private:
     int physicalDir(MotionDir logical) const;
     bool checkLimits(int32_t target_pos) const;
 
-    static void stepperEventCb(const struct device *dev, enum stepper_event event, void *ud);
+    static void stepperEventCb(const struct device *dev,
+                               enum stepper_ctrl_event event, void *ud);
 };
 
 } // namespace component

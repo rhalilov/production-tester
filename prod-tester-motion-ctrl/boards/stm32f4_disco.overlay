@@ -117,19 +117,19 @@
 
 	/* 3 step/dir banks */
 	axis1: axis1 {
-		compatible = "zephyr,gpio-step-dir-stepper";
+		compatible = "zephyr,gpio-step-dir-stepper-ctrl";
 		step-gpios = <&gpioe 5 GPIO_ACTIVE_HIGH>;
 		dir-gpios  = <&gpioe 2 GPIO_ACTIVE_LOW>;
 		counter    = <&axis1_counter>;
 	};
 	axis2: axis2 {
-		compatible = "zephyr,gpio-step-dir-stepper";
+		compatible = "zephyr,gpio-step-dir-stepper-ctrl";
 		step-gpios = <&gpiob 7 GPIO_ACTIVE_HIGH>;
 		dir-gpios  = <&gpiod 6 GPIO_ACTIVE_HIGH>;
 		counter    = <&axis2_counter>;
 	};
 	axis3: axis3 {
-		compatible = "zephyr,gpio-step-dir-stepper";
+		compatible = "zephyr,gpio-step-dir-stepper-ctrl";
 		step-gpios = <&gpioc 8 GPIO_ACTIVE_HIGH>;
 		dir-gpios  = <&gpioc 9 GPIO_ACTIVE_HIGH>;
 		counter    = <&axis3_counter>;

@@ -25,8 +25,8 @@ public:
     uint32_t elapsed() const {
         if (!running_) return 0;
         uint32_t now = k_uptime_get_32();
-        uint32_t start = target_ - (target_ > now ? target_ - now : 0);
-        return now >= target_ ? target_ : now - (target_ - (target_ - now));
+        if (now >= target_) return target_;
+        return 0;
     }
 
 private:

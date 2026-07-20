@@ -30,10 +30,12 @@ bool StepperMotor::checkLimits(int32_t target_pos) const
            target_pos <= cfg_->soft_limit_max;
 }
 
-void StepperMotor::stepperEventCb(const struct device *dev, enum stepper_event event, void *ud)
+void StepperMotor::stepperEventCb(const struct device *dev,
+                                   enum stepper_ctrl_event event, void *ud)
 {
     auto *self = static_cast<StepperMotor *>(ud);
-    if (event == STEPPER_EVENT_STEPS_COMPLETED || event == STEPPER_EVENT_STOPPED) {
+    if (event == STEPPER_CTRL_EVENT_STEPS_COMPLETED ||
+        event == STEPPER_CTRL_EVENT_STOPPED) {
         self->onMoveComplete();
     }
 }
@@ -75,7 +77,7 @@ int StepperMotor::init(const StepperMotorConfig &cfg)
         return -ENODEV;
     }
 
-    stepper_set_event_callback(cfg_->stepper_dev, stepperEventCb, this);
+    stepper_ctrl_set_event_cb(cfg_->stepper_dev, stepperEventCb, this);
 
     if (cfg_->ena_pin && gpio_is_ready_dt(cfg_->ena_pin)) {
         gpio_pin_configure_dt(cfg_->ena_pin, GPIO_OUTPUT_INACTIVE);
@@ -130,17 +132,19 @@ int StepperMotor::home()
         return 0;
     }
 
-    int err = stepper_set_microstep_interval(cfg_->stepper_dev, computeInterval(cfg_->home_rpm));
+    int err = stepper_ctrl_set_microstep_interval(cfg_->stepper_dev, computeInterval(cfg_->home_rpm));
     if (err) {
         return err;
     }
 
-    int phys = physicalDir(cfg_->home_dir);
+    auto dir = (physicalDir(cfg_->home_dir) > 0)
+                   ? STEPPER_CTRL_DIRECTION_POSITIVE
+                   : STEPPER_CTRL_DIRECTION_NEGATIVE;
+
     moving_ = true;
     cur_dir_ = cfg_->home_dir;
 
-    err = stepper_run(cfg_->stepper_dev,
-                      (phys > 0) ? STEPPER_DIRECTION_POSITIVE : STEPPER_DIRECTION_NEGATIVE);
+    err = stepper_ctrl_run(cfg_->stepper_dev, dir);
     if (err) {
         moving_ = false;
         cur_dir_ = MotionDir::NONE;
@@ -149,7 +153,7 @@ int StepperMotor::home()
 
     while (!gpio_pin_get_dt(cfg_->home_sensor)) {
         if (alarm_) {
-            stepper_stop(cfg_->stepper_dev);
+            stepper_ctrl_stop(cfg_->stepper_dev);
             moving_ = false;
             cur_dir_ = MotionDir::NONE;
             return static_cast<int>(Error::IN_FAULT);
@@ -157,7 +161,7 @@ int StepperMotor::home()
         k_msleep(1);
     }
 
-    stepper_stop(cfg_->stepper_dev);
+    stepper_ctrl_stop(cfg_->stepper_dev);
     moving_ = false;
     cur_dir_ = MotionDir::NONE;
     position_ = 0;
@@ -182,7 +186,7 @@ StepperMotor::Error StepperMotor::go(int32_t steps, uint32_t rpm)
         }
     }
 
-    int err = stepper_set_microstep_interval(cfg_->stepper_dev, computeInterval(rpm));
+    int err = stepper_ctrl_set_microstep_interval(cfg_->stepper_dev, computeInterval(rpm));
     if (err) return Error::NOT_READY;
 
     MotionDir logical = (steps >= 0) ? MotionDir::POS : MotionDir::NEG;
@@ -194,7 +198,7 @@ StepperMotor::Error StepperMotor::go(int32_t steps, uint32_t rpm)
     moving_ = true;
     pending_steps_ = steps;
 
-    err = stepper_move_by(cfg_->stepper_dev, (int32_t)abs_steps * phys);
+    err = stepper_ctrl_move_by(cfg_->stepper_dev, (int32_t)abs_steps * phys);
     if (err) {
         moving_ = false;
         cur_dir_ = MotionDir::NONE;
@@ -207,7 +211,7 @@ StepperMotor::Error StepperMotor::go(int32_t steps, uint32_t rpm)
     k_timeout_t timeout = K_MSEC(exp_ms * 2 + 2000);
 
     if (k_sem_take(&done_sem_, timeout) != 0) {
-        stepper_stop(cfg_->stepper_dev);
+        stepper_ctrl_stop(cfg_->stepper_dev);
         moving_ = false;
         cur_dir_ = MotionDir::NONE;
         pending_steps_ = 0;
@@ -232,15 +236,16 @@ StepperMotor::Error StepperMotor::run(uint32_t rpm, MotionDir dir)
     if (moving_) return Error::BUSY;
     if (rpm == 0) return Error::NOT_READY;
 
-    int err = stepper_set_microstep_interval(cfg_->stepper_dev, computeInterval(rpm));
+    int err = stepper_ctrl_set_microstep_interval(cfg_->stepper_dev, computeInterval(rpm));
     if (err) return Error::NOT_READY;
 
-    int phys = physicalDir(dir);
+    auto ctrl_dir = (physicalDir(dir) > 0)
+                        ? STEPPER_CTRL_DIRECTION_POSITIVE
+                        : STEPPER_CTRL_DIRECTION_NEGATIVE;
     cur_dir_ = dir;
     moving_ = true;
 
-    err = stepper_run(cfg_->stepper_dev,
-                      (phys > 0) ? STEPPER_DIRECTION_POSITIVE : STEPPER_DIRECTION_NEGATIVE);
+    err = stepper_ctrl_run(cfg_->stepper_dev, ctrl_dir);
     if (err) {
         moving_ = false;
         cur_dir_ = MotionDir::NONE;
@@ -252,14 +257,14 @@ StepperMotor::Error StepperMotor::run(uint32_t rpm, MotionDir dir)
 
 void StepperMotor::stop()
 {
-    stepper_stop(cfg_->stepper_dev);
+    stepper_ctrl_stop(cfg_->stepper_dev);
     moving_ = false;
     cur_dir_ = MotionDir::NONE;
 }
 
 void StepperMotor::emergencyStop()
 {
-    stepper_stop(cfg_->stepper_dev);
+    stepper_ctrl_stop(cfg_->stepper_dev);
     moving_ = false;
     cur_dir_ = MotionDir::NONE;
 }

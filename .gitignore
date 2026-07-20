@@ -15,3 +15,4 @@ INFEED_F407_*/
 
 # Windows Zone.Identifier files
 *Zone.Identifier
+prod-tester-motion-ctrl/build/
