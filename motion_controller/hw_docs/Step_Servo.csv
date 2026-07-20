@@ -1,0 +1,35 @@
+Step Servo Drive;
+RS232 via RJ11 (pinout not marked);
+Control Signal 5-24V (via optron);
+;
+Control Signal Bank;
+;PUL+
+;PUL-
+;DIR+
+;DIR-
+;ENA+
+;ENA-
+;
+Signal Bank;
+;Pend+
+;Pend-
+;ALM+
+;ALM-
+;
+Encoder;
+;EB+
+;EB-
+;EA+
+;EA-
+;VCC
+;EGND
+;
+Isolated Bank;
+;A+
+;A-
+;B+
+;B-
+;
+AC18-80V Bank;
+;AC
+;AC

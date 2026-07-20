@@ -1,0 +1,16 @@
+# Build output
+motion_controller/stepper_f407_emul/build/
+
+# Eclipse/STM32CubeIDE workspace
+.metadata/
+
+# Firmware binaries and archives
+*.bin
+*.zip
+*.tar
+
+# Release folders
+INFEED_F407_*/
+
+# Windows Zone.Identifier files
+*Zone.Identifier

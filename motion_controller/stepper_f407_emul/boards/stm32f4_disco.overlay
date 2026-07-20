@@ -1,0 +1,225 @@
+/*
+ * INFEED multi-axis stepper controller — STM32F407 Discovery on the Shelly
+ * "Main" test-fixture board.  Pin map: ~/moto/hw_docs/PIN_map_v5.csv (canonical).
+ *
+ * 3 step/dir/ena output banks drive 4 step-servo drives; banks 1 and 2 drive one
+ * motor each, bank 3 drives the two SYNCHRONOUS motors in parallel (same pulse
+ * train).  Each of the 4 drives reports back its own PEND+ (in-position) and
+ * ALM+ (alarm).  11 process sensors (PNP) + the SMEMA conveyor handshake round
+ * it out.  The 4 ALM + 11 sensors are INTERRUPT-driven (one distinct EXTI line
+ * each); the 4 PEND + 2 SMEMA inputs are POLLED (their EXTI lines collide with
+ * the 15).  All handled by the supervisor thread.
+ *
+ *   Bank   STEP(PLS-)   DIR-     ENA-     PEND+    ALM+
+ *   1      PE5          PE2      PB8      PE6      PE4
+ *   2      PB7          PD6      PD3      PB9      PB6
+ *   3      PC8          PC9      PC6      PD2      PC11   (motor 3)
+ *   3*     (shared)     -        -        PA15     PA8    (motor 4, same bank)
+ *
+ * MCU pin HIGH -> NPN sink ON -> drive opto (common-anode) energised = asserted.
+ */
+
+/* ---- Free the pins the board otherwise claims --------------------------- */
+/* PB6=I2C1_SCL & PB9=I2C1_SDA -> ALM+2 / PEND+2 (also drops the CS43L22 codec) */
+&i2c1   { status = "disabled"; };
+/* PC10=I2S3_CK & PC12=I2S3_SD are vacated; audio stays off.                    */
+&i2s3   { status = "disabled"; };
+&plli2s { status = "disabled"; };
+/* CAN1 (PD0/PD1) and CAN2 (PB5/PB13) unused.                                   */
+&can1   { status = "disabled"; };
+&can2   { status = "disabled"; };
+
+/* ---- Clock: self-clocked from internal HSI (mini-USB = debug only) ------ */
+/* HSI 16 MHz /16 *336 /2 = 168 MHz SYSCLK; HSE (ST-Link supplied) disabled.  */
+&clk_hsi { status = "okay"; };
+&pll {
+	div-m  = <16>;
+	mul-n  = <336>;
+	div-p  = <2>;
+	div-q  = <7>;
+	clocks = <&clk_hsi>;
+	status = "okay";
+};
+&clk_hse { status = "disabled"; };
+
+/* Firmware-hang safety layer. */
+&iwdg { status = "okay"; };
+
+/* ---- Persistent settings (ZMS) ----------------------------------------- */
+/* The sensor-role map + polarity + direction live in ZMS (NVS can't: its
+ * settings backend caps sector size at 64K, and STM32F4's upper flash is all
+ * 128K sectors). Use the TOP three 128K sectors (9-11) — well clear of the
+ * ~110K image at the bottom. No code-partition is defined, so the app still
+ * links to the whole flash; this region simply isn't written by the loader.   */
+&flash0 {
+	partitions {
+		compatible = "fixed-partitions";
+		#address-cells = <1>;
+		#size-cells = <1>;
+		storage_partition: partition@a0000 {
+			label = "storage";
+			reg = <0x000a0000 0x00060000>;   /* 384K: sectors 9-11 (3x128K) */
+		};
+	};
+};
+
+/* ---- Console / shell over USB-CDC-ACM (OTG-FS, micro-USB CN5) ----------- */
+/* The F4-Disco ST-LINK has no usable VCP, so the console comes over the F407's
+ * own USB-OTG port (PA11/PA12) as a CDC-ACM device -> host /dev/ttyACM*.
+ * USART3 PD8/PD9 stays enabled as a wired fallback (external USB-TTL).        */
+&zephyr_udc0 {
+	cdc_acm_uart0: cdc_acm_uart0 {
+		compatible = "zephyr,cdc-acm-uart";
+	};
+};
+/ {
+	chosen {
+		zephyr,console    = &usart3;
+		zephyr,shell-uart = &usart3;
+	};
+};
+&usart2 { status = "disabled"; };
+&usart3 {
+	pinctrl-0 = <&usart3_tx_pd8 &usart3_rx_pd9>;
+	pinctrl-names = "default";
+	current-speed = <115200>;
+	status = "okay";
+};
+
+/* ---- Step-timing counters (one per bank) -------------------------------- */
+/* axis1=TIM2 and axis3=TIM5 are 32-bit (full step-rate range); axis2 (motor 2,
+ * width — unused in the sequence) gets the 16-bit TIM3. 10 rpm = 3 ms/step
+ * overflows a 16-bit counter, so the *used* table axis (3) must be 32-bit.
+ * NB: the board uses TIM4 for the LED PWM, so TIM4 is intentionally avoided.   */
+&timers2 {
+	status = "okay";
+	st,prescaler = <0>;
+	axis1_counter: counter { compatible = "st,stm32-counter"; status = "okay"; };
+};
+&timers5 {
+	status = "okay";
+	st,prescaler = <0>;
+	axis3_counter: counter { compatible = "st,stm32-counter"; status = "okay"; };
+};
+&timers3 {
+	status = "okay";
+	st,prescaler = <0>;
+	axis2_counter: counter { compatible = "st,stm32-counter"; status = "okay"; };
+};
+
+/ {
+	aliases {
+		stepper = &axis1;
+	};
+
+	/*
+	 * ENA-1/2/3 as plain GPIO outputs. Per-bank polarity by drive type:
+	 *   Banks 1 & 2 (HBS57): GPIO_ACTIVE_LOW - bench-confirmed 2026-07-09 on a
+	 *     fully-wired HBS57 that drive-ENA LOW = ENABLED (motor holds) and HIGH =
+	 *     DISABLED (free). Board drives ENA non-inverting (MCU pin low ->
+	 *     drive-ENA low), so logical 1 = ENABLED = pin LOW.
+	 *   Bank 3 (motors 3+4, ZDM): GPIO_ACTIVE_HIGH - kept as-is; enable sense
+	 *     handled on the drive side. Flip here if the ZDM is set opposite.
+	 * All: boot-idle (OUTPUT_INACTIVE) = motors FREE, the safe default;
+	 * safety_set_enable(true) then drives the enable level to energize.
+	 */
+	motor_enables {
+		compatible = "gpio-leds";
+		ena1: ena1 { gpios = <&gpiob 8 GPIO_ACTIVE_LOW>;  label = "ENA1"; };
+		ena2: ena2 { gpios = <&gpiod 3 GPIO_ACTIVE_LOW>;  label = "ENA2"; };
+		ena3: ena3 { gpios = <&gpioc 6 GPIO_ACTIVE_HIGH>; label = "ENA3"; };
+	};
+
+	/*
+	 * 3 double-solenoid pneumatic valves (SMC SY3220-5LOU, 5/2 bistable). Two
+	 * coils per valve; PULSE one to shift, the valve HOLDS with both off. The
+	 * solenoid module enforces "never both coils" + auto-release. Driver +
+	 * flyback live on the fixture; MCU HIGH = energize (ACTIVE_HIGH, TBD).
+	 */
+	solenoids {
+		compatible = "gpio-leds";
+		sol1_a: sol1_a { gpios = <&gpiob 12 GPIO_ACTIVE_HIGH>; label = "SOL1_A"; };
+		sol1_b: sol1_b { gpios = <&gpiob 13 GPIO_ACTIVE_HIGH>; label = "SOL1_B"; };
+		sol2_a: sol2_a { gpios = <&gpiob 14 GPIO_ACTIVE_HIGH>; label = "SOL2_A"; };
+		sol2_b: sol2_b { gpios = <&gpiob 15 GPIO_ACTIVE_HIGH>; label = "SOL2_B"; };
+		sol3_a: sol3_a { gpios = <&gpiod 10 GPIO_ACTIVE_HIGH>; label = "SOL3_A"; };
+		sol3_b: sol3_b { gpios = <&gpiod 11 GPIO_ACTIVE_HIGH>; label = "SOL3_B"; };
+	};
+
+	/* 3 step/dir banks. invert-direction is the per-axis travel-sense knob. */
+	axis1: axis1 {
+		compatible = "zephyr,gpio-step-dir-stepper-ctrl";
+		step-gpios = <&gpioe 5 GPIO_ACTIVE_HIGH>;   /* PLS-1 (TIM9_CH1 pin, driven as GPIO) */
+		dir-gpios  = <&gpioe 2 GPIO_ACTIVE_HIGH>;   /* DIR-1 */
+		counter    = <&axis1_counter>;
+	};
+	axis2: axis2 {
+		compatible = "zephyr,gpio-step-dir-stepper-ctrl";
+		step-gpios = <&gpiob 7 GPIO_ACTIVE_HIGH>;   /* PLS-2 (TIM4_CH2 pin, driven as GPIO) */
+		dir-gpios  = <&gpiod 6 GPIO_ACTIVE_HIGH>;   /* DIR-2 */
+		counter    = <&axis2_counter>;
+	};
+	axis3: axis3 {
+		compatible = "zephyr,gpio-step-dir-stepper-ctrl";
+		step-gpios = <&gpioc 8 GPIO_ACTIVE_HIGH>;   /* PLS-3 (TIM3_CH3 pin, driven as GPIO); drives motors 3+4 */
+		dir-gpios  = <&gpioc 9 GPIO_ACTIVE_HIGH>;   /* DIR-3 */
+		counter    = <&axis3_counter>;
+	};
+
+	/*
+	 * Inputs resolved in firmware via GPIO_DT_SPEC_GET.
+	 *
+	 *  - Sensors (PNP, source-high when active) + ALM are INTERRUPT-driven:
+	 *    each is on a distinct EXTI line (see PIN_map_v5.csv). ACTIVE_HIGH +
+	 *    PULL_DOWN gives a defined idle level so a disconnected/idle line does
+	 *    not generate spurious edges.
+	 *  - PEND + the 2 SMEMA inputs are POLLED (their EXTI lines collide with the
+	 *    15 above; STM32 EXTI serves one port per line).
+	 *  - ALM/PEND polarity is drive-dependent and not yet bench-confirmed
+	 *    (TODO: confirm opto type; flip ACTIVE_* / pull if open-collector).
+	 *  - SMEMA is isolated and RESERVED (pins held, logic implemented later).
+	 */
+	zephyr,user {
+		/* 11 process sensors (PNP) — 3 laser, 6 inductive, 2 photo-electric.
+		 * Pins/EXTI lines unchanged; only the category split was relabelled. */
+		/* Lasers are ACTIVE-LOW on the v0.2.0 board (idle high, pulled low when
+		 * closed) — pull-up + active-low. NB the sensor logical sense is set in
+		 * io.c (raw read + runtime polarity); the pull is what matters here. */
+		laser1-gpios     = <&gpioc  5 (GPIO_ACTIVE_LOW | GPIO_PULL_UP)>;
+		laser2-gpios     = <&gpiob  1 (GPIO_ACTIVE_LOW | GPIO_PULL_UP)>;
+		laser3-gpios     = <&gpiob  0 (GPIO_ACTIVE_LOW | GPIO_PULL_UP)>;
+		inductive4-gpios = <&gpiob  2 (GPIO_ACTIVE_HIGH | GPIO_PULL_DOWN)>; /* PB2=BOOT1: keep BOOT0 low at reset */
+		inductive5-gpios = <&gpioe  7 (GPIO_ACTIVE_HIGH | GPIO_PULL_DOWN)>;
+		inductive6-gpios = <&gpioe  9 (GPIO_ACTIVE_HIGH | GPIO_PULL_DOWN)>;
+		inductive7-gpios = <&gpioe 10 (GPIO_ACTIVE_HIGH | GPIO_PULL_DOWN)>;
+		inductive8-gpios = <&gpioe 12 (GPIO_ACTIVE_HIGH | GPIO_PULL_DOWN)>;
+		inductive9-gpios = <&gpioe 13 (GPIO_ACTIVE_HIGH | GPIO_PULL_DOWN)>;
+		photo10-gpios    = <&gpioe 14 (GPIO_ACTIVE_HIGH | GPIO_PULL_DOWN)>;
+		photo11-gpios    = <&gpioe 15 (GPIO_ACTIVE_HIGH | GPIO_PULL_DOWN)>;
+
+		/* Drive feedback (ALM+ / PEND+). These step-servo opto outputs are
+		 * open-collector: idle = pulled high, asserted = pulled low -> use
+		 * ACTIVE_LOW + PULL_UP. Also required for ALM2/PEND2 (PB6/PB9), which
+		 * carry the F407-Disco codec's I2C pull-ups (would false-trigger as
+		 * ACTIVE_HIGH). TBD: confirm against the real drives' opto polarity. */
+		alm1-gpios = <&gpioe  4 (GPIO_ACTIVE_LOW | GPIO_PULL_UP)>;
+		alm2-gpios = <&gpiob  6 (GPIO_ACTIVE_LOW | GPIO_PULL_UP)>;
+		alm3-gpios = <&gpioc 11 (GPIO_ACTIVE_LOW | GPIO_PULL_UP)>;
+		alm4-gpios = <&gpioa  8 (GPIO_ACTIVE_LOW | GPIO_PULL_UP)>;
+
+		pend1-gpios = <&gpioe  6 (GPIO_ACTIVE_LOW | GPIO_PULL_UP)>;
+		pend2-gpios = <&gpiob  9 (GPIO_ACTIVE_LOW | GPIO_PULL_UP)>;
+		pend3-gpios = <&gpiod  2 (GPIO_ACTIVE_LOW | GPIO_PULL_UP)>;
+		pend4-gpios = <&gpioa 15 (GPIO_ACTIVE_LOW | GPIO_PULL_UP)>;  /* PA15=JTDI, free under SWD */
+
+		/* SMEMA conveyor handshake — directions per IPC-9851.
+		 * PC1 / PA1 inputs = ACTIVE_LOW + internal PULL-UP (open-collector/opto:
+		 * idle high = not asserted, pulled low = asserted). Board req 2026-07-02.
+		 * NB: not bench-tested yet — needs the real up/down-stream machines. */
+		smema-up-board-available-gpios   = <&gpioc 1 (GPIO_ACTIVE_LOW | GPIO_PULL_UP)>; /* I: upstream has a board */
+		smema-up-machine-ready-gpios     = <&gpioc 2 GPIO_ACTIVE_HIGH>; /* O: we can accept */
+		smema-down-board-available-gpios = <&gpioc 3 GPIO_ACTIVE_HIGH>; /* O: we have a board */
+		smema-down-machine-ready-gpios   = <&gpioa 1 (GPIO_ACTIVE_LOW | GPIO_PULL_UP)>; /* I: downstream can accept */
+		smema-down-board-available-fail-gpios = <&gpioa 3 GPIO_ACTIVE_HIGH>; /* O: FAILED board available to next machine */
+	};
+};

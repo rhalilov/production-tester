@@ -1,0 +1,51 @@
+Left Sensor Side;Name;Level;Note;Disco;Function;;Right Motor Side;Prototyping;;Name;Level;Note;Disco;Function
+1;GND;;;;;;1;;;GND;;;;
+2;GND;;;;;;2;;;GND;;;;
+3;VDD;;;;;;3;;;5V;;;;
+4;VDD;;;;;;4;;;5V;;;;
+5;GND;;;;;;5;;;3V;;;;
+6;NRST;;;Button;;;6;;;3V;;;;
+7;PC1;5V;;;SMEMA up Board Available (I);;7;;;PH0;5V;;OSC;
+8;PC0;5V;OTG;;;;8;;;PH1;5V;;OSC;
+9;PC3;5V;;;SMEMA down Board Available (O);;9;;;PC14;5V;input only;OSC32;
+10;PC2;5V;;;SMEMA Machine up Ready (O);;10;;;PC15;5V;input only;OSC32;
+11;PA1;5V;;;SMEMA Machine down Ready (I);;11;;;PE6;;;;PEND+ 1
+12;PA0;Not use;;User Button;;;12;;;PC13;5V;Input only;;
+13;PA3;5V;;;Cylinder Driver;;13;;;PE4;5V;;;ALM+ 1
+14;PA2;5V;;;Cylinder Driver;;14;;;PE5;5V;TIM9_CH1;;PLS- 1
+15;PA5;3V ;;Jtag;;;15;;;PE2;5V;;;DIR- 1
+16;PA4;3V ;;;Cylinder Driver;;16;;;PE3;5V;;Accel!;
+17;PA7;5V;;Jtag;;;17;;;PE0;5V;;Accel!;
+18;PA6;5V;;Jtag;;;18;;;PE1;5V;;Accel!;
+19;PC5;5V;;;Sensor Laser 1;;19;;;PB8;5V;;;ENA- 1
+20;PC4;5V;;;;;20;;;PB9;5V;;Codec!;PEND+ 2
+21;PB1;5V;;;Sensor Laser 2;;21;;;BOOT;;;;
+22;PB0;5V;;;Sensor Laser 3;;22;;;VDD;;;;
+23;GND;;;;;;23;;;PB6;5V;;Codec!;ALM+ 2
+24;PB2;5V;;Boot1;Sensor Inductive 4;;24;;;PB7;5V;TIM4_CH2;;PLS- 2
+25;PE7;5V;;;Sensor Inductive 5;;25;;;PB4;5V;;Jtag;
+26;PE8;5V;;;;;26;;;PB5;5V;;OTG?FS;
+27;PE9;5V;;;Sensor Photo-electric 6;;27;;;PD7;5V;;;
+28;PE10;5V;;;Sensor Photo-electric 7;;28;;;PB3;5V;;ST_LINK;
+29;PE11;5V;;;;;29;;;PD5;5V;;OTG;
+30;PE12;5V;;;Sensor Photo-electric 8;;30;;;PD6;5V;;;DIR- 2
+31;PE13;5V;;;Sensor Photo-electric 9;;31;;;PD3;5V;;;ENA- 2
+32;PE14;5V;;;Sensor Photo-electric 10;;32;;;PD4;5V;;Codec!;
+33;PE15;5V;;;Sensor Photo-electric 11;;33;;;PD1;5V;;CAN;
+34;PB10;5V;;SWI;;;34;;;PD2;5V;;;PEND+ 3
+35;PB11;5V;;SWI;;;35;;;PC12;5V;;Codec!;
+36;PB12;5V;;;GPIO;;36;;;PD0;5V;;CAN;
+37;PB13;5V;;;GPIO;;37;;;PC10;5V;;Codec!;
+38;PB14;5V;;;GPIO;;38;;;PC11;5V;;;ALM+ 3
+39;PB15;5V;;;GPIO;;39;;;PA14;5V;;ST_LINK;
+40;PD8;5V;;;TX;;40;;;PA15;5V;;;PEND+ 4
+41;PD9;5V;;;RX;;41;;;PA10;5V;;OTG;
+42;PD10;5V;;;GPIO;;42;;;PA13;5V;;ST_LINK;
+43;PD11;5V;;;GPIO;;43;;;PA8;5V;;;ALM+ 4
+44;PD12;5V;;User LED4;;;44;;;PA9;5V;;LED_STLINK;
+45;PD13;5V;;User LED3;;;45;;;PC8;5V;TIM3_CH3;;PLS- 3
+46;PD14;5V;;User LED5;;;46;;;PC9;5V;;;DIR- 3
+47;PD15;5V;;User LED6;;;47;;;PC6;5V;;;ENA- 3
+48;NC;;;;;;48;;;PC7;5V;;;GPIO
+49;GND;;;;;;49;;;GND;;;;
+50;GND;;;;;;50;;;GND;;;;

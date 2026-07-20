@@ -1,0 +1,51 @@
+Left Sensor Side;Name;Level;Note;Disco;Function;Alt;PCB;;Right Motor Side;Prototyping;;Name;Level;Note;Disco;Function;Alt;PCB
+1;GND;;;;;;;;1;;;GND;;;;;;
+2;GND;;;;;;;;2;;;GND;;;;;;
+3;VDD;;;;;;;;3;;;5V;;;;;;
+4;VDD;;;;;;;;4;;;5V;;;;;;
+5;GND;;;;;;;;5;;;3V;;;;;;
+6;NRST;;;Button;;;;;6;;;3V;;;;;;
+7;PC1;5V;;;SMEMA up Machine Ready (O);;Header;;7;;;PH0;5V;;OSC;;;
+8;PC0;5V;ETH_MD;;SMEMA up Machine Ready Return (O);;Header;;8;;;PH1;5V;;OSC;;;
+9;PC3;5V;;;SMEMA up Board Available (I);;Header;;9;;;PC14;5V;input only;OSC32;;;
+10;PC2;5V;;;SMEMA up Board Available Return (I);;Header;;10;;;PC15;5V;input only;OSC32;;;
+11;PA1;5V;ETH_RMII__REF _CLK;;SMEMA down Machine Ready (I);;;;11;;;PE6;;;;PEND+ 1;;
+12;PA0;Not use;;User Button;;;;;12;;;PC13;5V;Input only;;;;
+13;PA3;5V;;;SMEMA down Machine Ready Return (I);;Header;;13;;;PE4;5V;;;ALM+ 1;;
+14;PA2;5V;ETH_MDIO;;SMEMA down Board Available (O);;Header;;14;;;PE5;5V;TIM;;PLS- 1;;
+15;PA5;3V ;;Jtag;;;;;15;;;PE2;5V;;;DIR- 1;;
+16;PA4;3V ;;;SMEMA down Board Available Return (O);;Header;;16;;;PE3;5V;;;ENA- 1;;
+17;PA7;5V;ETH_RMII _CRS_DV;Jtag;ETH;;;;17;;;PE0;5V;;;PEND+ 2;;
+18;PA6;5V;;Jtag;;;;;18;;;PE1;5V;;;ALM+ 2;;
+19;PC5;5V;ETH _RMII_RXD1;;Sensor Laser 1;;Shelly J9/ Header;;19;;;PB8;5V;TIM;;PLS- 2;;
+20;PC4;5V;ETH_RMII_RXD0;;Sensor Laser 2;;Shelly J9/ Header;;20;;;PB9;5V;;;DIR- 2;;
+21;PB1;5V;;Jtag;;;;;21;;;BOOT;;;;;;
+22;PB0;5V;;;Sensor Laser 3;;Header;;22;;;VDD;;;;;;
+23;GND;;;;Sensor Inductive 4;;Header;;23;;;PB6;5V;TIM;;ENA- 2;PLS- 1;Shelly J4
+24;PB2;5V;;Boot1;;;;;24;;;PB7;5V;;;PEND+ 3;DIR- 1;Shelly J4
+25;PE7;5V;;;Sensor Inductive 5;;Header;;25;;;PB4;5V;;;ALM+ 3;;
+26;PE8;5V;;;Sensor Photo-electric 6;;Header;;26;;;PB5;5V;TIM;;PLS- 3;ENA-1;Shelly J4
+27;PE9;5V;;;Sensor Photo-electric 7;;Header;;27;;;PD7;5V;;;DIR- 3;;
+28;PE10;5V;;;Sensor Photo-electric 8;;Header;;28;;;PB3;5V;ST_LINK;;;;
+29;PE11;5V;TH _RMII_TX_EN;;Sensor Photo-electric 9;;Header;;29;;;PD5;5V;;;ENA- 3;;
+30;PE12;5V;;;Sensor Photo-electric 10;;Header;;30;;;PD6;5V;;;PEND+ 4;;
+31;PE13;5V;;;Sensor Photo-electric 11;;Header;;31;;;PD3;5V;;;ALM+ 4;;
+32;PE14;5V;;;Raspberry IO 1;;;;32;;;PD4;5V;;;GPIO;;
+33;PE15;5V;;;Raspberry IO 2;;;;33;;;PD1;5V;;;GPIO;;
+34;PB10;5V;;SWI;;;;;34;;;PD2;5V;;;GPIO;;
+35;PB11;5V;;SWI;;;;;35;;;PC12;5V;;;GPIO;;
+36;PB12;5V;ETH _RMII_TXD0 ;;Raspberry IO 3;;;;36;;;PD0;5V;;;GPIO;;
+37;PB13;5V;ETH _RMII_TXD1;;Raspberry IO 4;;;;37;;;PC10;5V;;;GPIO;;
+38;PB14;5V;;;Raspberry IO 5;;;;38;;;PC11;5V;;;GPIO;;
+39;PB15;5V;;;Raspberry IO 6;;;;39;;;PA14;5V;ST_LINK;;;;
+40;PD8;5V;;;TX;;;;40;;;PA15;5V;;;GPIO;;
+41;PD9;5V;;;RX;;;;41;;;PA10;5V;;;GPIO;;
+42;PD10;5V;;;Raspberry IO 6;;;;42;;;PA13;5V;ST_LINK;;;;
+43;PD11;5V;;;Raspberry IO 6;;;;43;;;PA8;5V;;;GPIO;;
+44;PD12;5V;;User LED4;;;;;44;;;PA9;5V;LED_STLINK;;;;
+45;PD13;5V;;User LED3;;;;;45;;;PC8;5V;;;GPIO;;
+46;PD14;5V;;User LED5;;;;;46;;;PC9;5V;;;GPIO;;
+47;PD15;5V;;User LED6;;;;;47;;;PC6;5V;;;GPIO;;
+48;NC;;;;;;;;48;;;PC7;5V;;;GPIO;;
+49;GND;;;;;;;;49;;;GND;;;;;;
+50;GND;;;;;;;;50;;;GND;;;;;;
