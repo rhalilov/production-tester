@@ -14,5 +14,6 @@ target_sources(app PRIVATE
 	src/evlog.c
 	src/process.c
 	src/roles.c
+	src/mset.c
 	src/cli.c
 )

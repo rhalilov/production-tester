@@ -6,6 +6,7 @@ motion_controller/stepper_f407_emul/build/
 
 # Firmware binaries and archives
 *.bin
+*.hex
 *.zip
 *.tar
 

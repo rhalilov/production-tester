@@ -74,8 +74,8 @@
 };
 / {
 	chosen {
-		zephyr,console    = &usart3;
-		zephyr,shell-uart = &usart3;
+		zephyr,console    = &cdc_acm_uart0;
+		zephyr,shell-uart = &cdc_acm_uart0;
 	};
 };
 &usart2 { status = "disabled"; };
@@ -113,21 +113,20 @@
 	};
 
 	/*
-	 * ENA-1/2/3 as plain GPIO outputs. Per-bank polarity by drive type:
-	 *   Banks 1 & 2 (HBS57): GPIO_ACTIVE_LOW - bench-confirmed 2026-07-09 on a
-	 *     fully-wired HBS57 that drive-ENA LOW = ENABLED (motor holds) and HIGH =
-	 *     DISABLED (free). Board drives ENA non-inverting (MCU pin low ->
-	 *     drive-ENA low), so logical 1 = ENABLED = pin LOW.
-	 *   Bank 3 (motors 3+4, ZDM): GPIO_ACTIVE_HIGH - kept as-is; enable sense
-	 *     handled on the drive side. Flip here if the ZDM is set opposite.
-	 * All: boot-idle (OUTPUT_INACTIVE) = motors FREE, the safe default;
-	 * safety_set_enable(true) then drives the enable level to energize.
+	 * ENA-1/2/3 as plain GPIO outputs. All three GPIO_ACTIVE_LOW (uniform as of
+	 * 2026-07-09): logical 1 = ENABLED = pin LOW; boot-idle (OUTPUT_INACTIVE) =
+	 * pin HIGH = motors FREE, the safe default; safety_set_enable(true) pulls low
+	 * to energize. Banks 1&2 (HBS57) bench-confirmed. Bank 3 (SS86D on J30)
+	 * reverted from ACTIVE_HIGH to match - set the drive's ENA sense to suit:
+	 * SS86D enables on ENA-LOW when P110 A-digit = 1 (P110 = 1000), P108 = 1.
+	 * If a bank comes up inverted (holds at boot, frees on jog), flip that
+	 * drive's polarity, not this flag.
 	 */
 	motor_enables {
 		compatible = "gpio-leds";
-		ena1: ena1 { gpios = <&gpiob 8 GPIO_ACTIVE_LOW>;  label = "ENA1"; };
-		ena2: ena2 { gpios = <&gpiod 3 GPIO_ACTIVE_LOW>;  label = "ENA2"; };
-		ena3: ena3 { gpios = <&gpioc 6 GPIO_ACTIVE_HIGH>; label = "ENA3"; };
+		ena1: ena1 { gpios = <&gpiob 8 GPIO_ACTIVE_LOW>; label = "ENA1"; };
+		ena2: ena2 { gpios = <&gpiod 3 GPIO_ACTIVE_LOW>; label = "ENA2"; };
+		ena3: ena3 { gpios = <&gpioc 6 GPIO_ACTIVE_LOW>; label = "ENA3"; };
 	};
 
 	/*
@@ -148,19 +147,19 @@
 
 	/* 3 step/dir banks. invert-direction is the per-axis travel-sense knob. */
 	axis1: axis1 {
-		compatible = "zephyr,gpio-step-dir-stepper-ctrl";
+		compatible = "zephyr,gpio-step-dir-stepper";
 		step-gpios = <&gpioe 5 GPIO_ACTIVE_HIGH>;   /* PLS-1 (TIM9_CH1 pin, driven as GPIO) */
-		dir-gpios  = <&gpioe 2 GPIO_ACTIVE_HIGH>;   /* DIR-1 */
+		dir-gpios  = <&gpioe 2 GPIO_ACTIVE_LOW>;    /* DIR-1: inverted 2026-07-12 - conveyor (motor 1) ran backwards; flips all axis-1 moves. Keep `infeed dir 1` at norm. */
 		counter    = <&axis1_counter>;
 	};
 	axis2: axis2 {
-		compatible = "zephyr,gpio-step-dir-stepper-ctrl";
+		compatible = "zephyr,gpio-step-dir-stepper";
 		step-gpios = <&gpiob 7 GPIO_ACTIVE_HIGH>;   /* PLS-2 (TIM4_CH2 pin, driven as GPIO) */
 		dir-gpios  = <&gpiod 6 GPIO_ACTIVE_HIGH>;   /* DIR-2 */
 		counter    = <&axis2_counter>;
 	};
 	axis3: axis3 {
-		compatible = "zephyr,gpio-step-dir-stepper-ctrl";
+		compatible = "zephyr,gpio-step-dir-stepper";
 		step-gpios = <&gpioc 8 GPIO_ACTIVE_HIGH>;   /* PLS-3 (TIM3_CH3 pin, driven as GPIO); drives motors 3+4 */
 		dir-gpios  = <&gpioc 9 GPIO_ACTIVE_HIGH>;   /* DIR-3 */
 		counter    = <&axis3_counter>;

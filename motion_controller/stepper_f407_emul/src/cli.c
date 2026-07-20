@@ -9,12 +9,15 @@
 #include "safety.h"
 #include "solenoid.h"
 #include "process.h"
+#include "mset.h"
 
 #include <errno.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <zephyr/shell/shell.h>
+
+static void mset_print(const struct shell *sh);
 
 static int cmd_status(const struct shell *sh, size_t argc, char **argv)
 {
@@ -58,6 +61,7 @@ static int cmd_status(const struct shell *sh, size_t argc, char **argv)
 	if (io_sim_any()) {
 		shell_warn(sh, "SIM ACTIVE - inputs forced; `infeed sim off` for live pins");
 	}
+	mset_print(sh);
 	return 0;
 }
 
@@ -125,7 +129,7 @@ static int cmd_sol(const struct shell *sh, size_t argc, char **argv)
 		shell_error(sh, "solenoid failed: %d", err);
 		return err;
 	}
-	shell_print(sh, "sol%d pulsed -> %s", id, pos == SOLENOID_A ? "A" : "B");
+	shell_print(sh, "sol%d -> coil %s held (level)", id, pos == SOLENOID_A ? "A" : "B");
 	return 0;
 }
 
@@ -336,9 +340,58 @@ static int cmd_start(const struct shell *sh, size_t argc, char **argv)
 	ARG_UNUSED(argc);
 	ARG_UNUSED(argv);
 
+	/* `infeed start` (re)triggers a fresh run: stop any motion, re-home, and
+	 * (re)start the per-panel cycle. Works any time, no reboot. */
 	process_start();
-	shell_print(sh, "start released");
+	shell_print(sh, "start: re-homing and (re)starting the cycle");
 	return 0;
+}
+
+/* Report a manual portion-of-cycle command result. */
+static int manual_report(const struct shell *sh, int err, const char *ok)
+{
+	switch (err) {
+	case 0:
+		shell_print(sh, "%s (manual mode - run `infeed start` to resume the auto-cycle)", ok);
+		return 0;
+	case -EBUSY:
+		shell_error(sh, "fault latched - run `infeed reset` first");
+		return err;
+	case -EAGAIN:
+		shell_error(sh, "auto cycle running - `infeed abort` then retry");
+		return err;
+	default:
+		shell_error(sh, "interrupted (fault or `infeed start`)");
+		return err;
+	}
+}
+
+static int cmd_table_home(const struct shell *sh, size_t argc, char **argv)
+{
+	ARG_UNUSED(argc);
+	ARG_UNUSED(argv);
+	return manual_report(sh, process_table_home(), "table homed");
+}
+
+static int cmd_table_down(const struct shell *sh, size_t argc, char **argv)
+{
+	ARG_UNUSED(argc);
+	ARG_UNUSED(argv);
+	return manual_report(sh, process_table_down(), "table down to test position");
+}
+
+static int cmd_load(const struct shell *sh, size_t argc, char **argv)
+{
+	ARG_UNUSED(argc);
+	ARG_UNUSED(argv);
+	return manual_report(sh, process_load(), "loaded: panel conveyed to position");
+}
+
+static int cmd_unload(const struct shell *sh, size_t argc, char **argv)
+{
+	ARG_UNUSED(argc);
+	ARG_UNUSED(argv);
+	return manual_report(sh, process_unload(), "unloaded: panel conveyed out past Laser 3");
 }
 
 static int cmd_test(const struct shell *sh, size_t argc, char **argv)
@@ -496,16 +549,105 @@ static int cmd_pol(const struct shell *sh, size_t argc, char **argv)
 	return 0;
 }
 
+/* Accept both '.' and ',' as the decimal separator (operator convenience). */
+static double parse_decimal(const char *s)
+{
+	char buf[24];
+	size_t i = 0;
+
+	for (; s[i] && i < sizeof(buf) - 1; i++) {
+		buf[i] = (s[i] == ',') ? '.' : s[i];
+	}
+	buf[i] = '\0';
+	return strtod(buf, NULL);
+}
+
+static void mset_print(const struct shell *sh)
+{
+	shell_print(sh, "motor setup (infeed set <1-7> <rpm> [rev]):");
+	for (int id = 1; id <= MSET_COUNT; id++) {
+		if (mset_has_rounds((enum mset_id)id)) {
+			uint32_t mrev = mset_steps((enum mset_id)id) * 1000U / MOTION_STEPS_PER_REV;
+
+			shell_print(sh, "  set %d: %u rpm, %u.%03u rev   [%s]", id,
+				    mset_rpm((enum mset_id)id), mrev / 1000U, mrev % 1000U,
+				    mset_name((enum mset_id)id));
+		} else {
+			shell_print(sh, "  set %d: %u rpm             [%s]", id,
+				    mset_rpm((enum mset_id)id), mset_name((enum mset_id)id));
+		}
+	}
+}
+
+static int cmd_set(const struct shell *sh, size_t argc, char **argv)
+{
+	if (argc == 1) {
+		mset_print(sh);
+		return 0;
+	}
+
+	int id = atoi(argv[1]);
+
+	if (id < 1 || id > MSET_COUNT) {
+		shell_error(sh, "id must be 1-%d (see `infeed set`)", MSET_COUNT);
+		return -EINVAL;
+	}
+	if (argc < 3) {
+		shell_error(sh, "usage: infeed set %d <rpm>%s", id,
+			    mset_has_rounds((enum mset_id)id) ? " <rev>" : "");
+		return -EINVAL;
+	}
+
+	int rpm = atoi(argv[2]);
+
+	if (rpm <= 0) {
+		shell_error(sh, "rpm must be > 0");
+		return -EINVAL;
+	}
+
+	uint32_t steps = 0;
+
+	if (mset_has_rounds((enum mset_id)id)) {
+		if (argc < 4) {
+			shell_error(sh, "set %d needs: <rpm> <rev>", id);
+			return -EINVAL;
+		}
+		double rev = parse_decimal(argv[3]);
+
+		if (!(rev > 0.0)) {
+			shell_error(sh, "rev must be > 0 (use '.' or ',')");
+			return -EINVAL;
+		}
+		steps = (uint32_t)(rev * (double)MOTION_STEPS_PER_REV + 0.5);
+	}
+
+	(void)mset_set((enum mset_id)id, (uint32_t)rpm, steps);
+
+	if (mset_has_rounds((enum mset_id)id)) {
+		uint32_t mrev = steps * 1000U / MOTION_STEPS_PER_REV;
+
+		shell_print(sh, "set %d = %d rpm, %u.%03u rev  [%s]  (run `infeed cfg save`)",
+			    id, rpm, mrev / 1000U, mrev % 1000U, mset_name((enum mset_id)id));
+	} else {
+		shell_print(sh, "set %d = %d rpm  [%s]  (run `infeed cfg save`)",
+			    id, rpm, mset_name((enum mset_id)id));
+	}
+	return 0;
+}
+
 static int cmd_cfg(const struct shell *sh, size_t argc, char **argv)
 {
 	if (strcmp(argv[1], "save") == 0) {
 		int rc = roles_save();
 
+		if (rc == 0) {
+			rc = mset_save();
+		}
 		if (rc) {
 			shell_error(sh, "save failed: %d", rc);
 			return rc;
 		}
-		shell_print(sh, "saved to flash");
+		shell_print(sh, "saved to flash (roles + motor setup)");
 		return 0;
 	}
 	if (strcmp(argv[1], "reset") == 0) {
@@ -548,6 +690,13 @@ static int cmd_cfg(const struct shell *sh, size_t argc, char **argv)
 	return -EINVAL;
 }
 
+/* `infeed table home|down` (manual commissioning). */
+SHELL_STATIC_SUBCMD_SET_CREATE(table_cmds,
+	SHELL_CMD(home, NULL, "home the table up to Photo 10 (#1)", cmd_table_home),
+	SHELL_CMD(down, NULL, "table down to test position, 6 rev (#10)", cmd_table_down),
+	SHELL_SUBCMD_SET_END
+);
+
 SHELL_STATIC_SUBCMD_SET_CREATE(infeed_cmds,
 	SHELL_CMD(status, NULL,
 		  "Dump sensors / ALM / PEND / SMEMA / fault / enable state",
@@ -560,6 +709,9 @@ SHELL_STATIC_SUBCMD_SET_CREATE(infeed_cmds,
 	SHELL_CMD(abort, NULL, "Software E-stop: abort the cycle (reset to restart)", cmd_abort),
 	SHELL_CMD(reset, NULL, "Clear a latched fault / abort (re-homes, restarts)", cmd_reset),
 	SHELL_CMD(start, NULL, "Release the unconfigured safe-hold / begin", cmd_start),
+	SHELL_CMD(table, &table_cmds, "table home|down  (manual commissioning)", NULL),
+	SHELL_CMD(load, NULL, "manual: panel in (Laser1) -> convey -> creep (#4-#9)", cmd_load),
+	SHELL_CMD(unload, NULL, "manual: convey out to position (Laser3) -> stop (#25-#27)", cmd_unload),
 	SHELL_CMD_ARG(test, NULL, "[on|off]  commissioning mode: cylinder confirms wait (no alarm)",
 		      cmd_test, 1, 1),
 	SHELL_CMD_ARG(map, NULL,
@@ -574,6 +726,8 @@ SHELL_STATIC_SUBCMD_SET_CREATE(infeed_cmds,
 		      cmd_jog, 3, 2),
 	SHELL_CMD_ARG(sim, NULL, "<name> <0|1> | off  force an input (logic test)",
 		      cmd_sim, 1, 2),
+	SHELL_CMD_ARG(set, NULL, "[<1-7> <rpm> [rev]]  motor speeds/rounds (no args = show)",
+		      cmd_set, 1, 3),
 	SHELL_CMD_ARG(cfg, NULL, "<save|reset|dump|load <token>>  persistence",
 		      cmd_cfg, 2, 1),
 	SHELL_SUBCMD_SET_END

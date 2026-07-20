@@ -2,12 +2,14 @@
 #include "io.h"
 #include "roles.h"
 #include "motion.h"
+#include "mset.h"
 #include "solenoid.h"
 #include "safety.h"
 #include "evlog.h"
 
 #include <zephyr/kernel.h>
 #include <zephyr/logging/log.h>
+#include <errno.h>
 
 LOG_MODULE_REGISTER(process, LOG_LEVEL_INF);
 
@@ -23,15 +25,39 @@ LOG_MODULE_REGISTER(process, LOG_LEVEL_INF);
 #define DELAY13_MS     100     /* step 13: explicit inter-step delay */
 #define CYL_CONFIRM_MS 10000   /* cylinder actuation ALARM timeout (production) */
 
+/* SMEMA inline handshake. Set 0 to run standalone on the live machine with NO
+ * upstream/downstream handshake (cycle gated only by Laser1 in / Laser3 out).
+ * Set back to 1 to restore the full SMEMA-gated line behaviour. */
+#define SMEMA_ENABLED  0
+
+/* Cylinders (solenoids + confirms). Production build = 1. The no-cylinders test
+ * build sets 0 (skips the stopper in `infeed load`). */
+#define CYLINDERS_ENABLED  1
+
 /* Live "name pin" of the sensor currently bound to a role (for the event log). */
 #define RS(r)  io_sensor_name(role_sensor(r)), io_sensor_pin(role_sensor(r))
 
 /* Released by `infeed start` to leave the unconfigured safe-hold. */
 static K_SEM_DEFINE(start_sem, 0, 1);
 
+/* Set by `infeed start` to (re)trigger a fresh run (re-home + cycle) at ANY
+ * time, even while already running. interrupted() folds it into the fault
+ * check so any in-flight wait/move bails out and the loop re-homes. */
+static volatile bool restart_req;
+static bool interrupted(void) { return safety_in_fault() || restart_req; }
+
+/* Manual commissioning mode: a manual command (infeed table/load/unload) parks
+ * the auto-cycle at its start gate (#4). cycle_active = a cycle is mid-run, so a
+ * manual command refuses. Both cleared by `infeed start` (resume auto-cycle). */
+static volatile bool manual_hold;
+static volatile bool cycle_active;
+
 void process_start(void)
 {
-	k_sem_give(&start_sem);
+	manual_hold = false;        /* leave manual mode, resume the auto-cycle */
+	restart_req = true;
+	motion_stop_all();          /* drop any in-flight move immediately */
+	k_sem_give(&start_sem);     /* release the unconfigured safe-hold if waiting */
 }
 
 /* Commissioning mode: cylinder confirms wait forever (no alarm) for hand-stepping. */
@@ -49,7 +75,19 @@ static void step_gap(void)
 static bool wait_role(enum io_role r)
 {
 	while (!role_read(r)) {
-		if (safety_in_fault()) {
+		if (interrupted()) {
+			return false;
+		}
+		k_msleep(POLL_MS);
+	}
+	return true;
+}
+
+/* Wait until a role's sensor OPENS (de-asserts). Returns false if a fault aborts it. */
+static bool wait_role_clear(enum io_role r)
+{
+	while (role_read(r)) {
+		if (interrupted()) {
 			return false;
 		}
 		k_msleep(POLL_MS);
@@ -68,7 +106,7 @@ static bool confirm(int step, enum io_role r, const char *what)
 	bool announced = false;
 
 	while (!role_read(r)) {
-		if (safety_in_fault()) {
+		if (interrupted()) {
 			return false;
 		}
 		if (test_mode || io_sim_any()) {
@@ -92,6 +130,9 @@ static bool confirm(int step, enum io_role r, const char *what)
 
 static bool wait_up_board_available(void)
 {
+#if !SMEMA_ENABLED
+	return true;   /* SMEMA disabled: no upstream handshake */
+#else
 	while (!io_smema_upstream_board_available()) {
 		if (safety_in_fault()) {
 			return false;
@@ -99,10 +140,14 @@ static bool wait_up_board_available(void)
 		k_msleep(POLL_MS);
 	}
 	return true;
+#endif
 }
 
 static bool wait_down_machine_ready(void)
 {
+#if !SMEMA_ENABLED
+	return true;   /* SMEMA disabled: no downstream handshake */
+#else
 	while (!io_smema_downstream_machine_ready()) {
 		if (safety_in_fault()) {
 			return false;
@@ -110,19 +155,20 @@ static bool wait_down_machine_ready(void)
 		k_msleep(POLL_MS);
 	}
 	return true;
+#endif
 }
 
 /* Blocking moves + fault check. Return false if faulted (caller aborts). */
 static bool go(enum motion_axis ax, enum motion_dir d, uint32_t rev, uint32_t rpm)
 {
 	(void)motion_go(ax, d, rev, rpm);
-	return !safety_in_fault();
+	return !interrupted();
 }
 
 static bool go_steps(enum motion_axis ax, enum motion_dir d, uint32_t steps, uint32_t rpm)
 {
 	(void)motion_go_steps(ax, d, steps, rpm);
-	return !safety_in_fault();
+	return !interrupted();
 }
 
 static void enable_all_motors(void)
@@ -152,7 +198,7 @@ static bool home_table(void)
 {
 	evlog(1, '.', "Homing table: motors 3+4 rotating positive (up) until table home (PLS-3 PC8 -> [table_home=%s %s])", RS(ROLE_TABLE_HOME));
 	if (!role_read(ROLE_TABLE_HOME)) {
-		motion_run(MOTION_AXIS3, MOTION_POS, HOME_RPM);
+		motion_run(MOTION_AXIS3, MOTION_POS, mset_rpm(MSET_HOME));
 		if (!wait_role(ROLE_TABLE_HOME)) {
 			motion_stop(MOTION_AXIS3);
 			return false;
@@ -161,6 +207,98 @@ static bool home_table(void)
 	}
 	evlog(1, '<', "Table home reached (up) - [table_home=%s %s] closed", RS(ROLE_TABLE_HOME));
 	return true;
+}
+
+/* ---- Manual commissioning commands: run one portion of the cycle from CLI ----
+ * Each enters manual mode (parks the auto-cycle) and stays there until
+ * `infeed start` resumes the auto-cycle. Refuses on fault or mid auto-cycle. */
+static int manual_begin(void)
+{
+	if (safety_in_fault()) {
+		return -EBUSY;      /* fault latched */
+	}
+	if (cycle_active) {
+		return -EAGAIN;     /* an auto cycle is running */
+	}
+	manual_hold = true;
+	return 0;
+}
+
+int process_table_home(void)          /* #1 */
+{
+	int err = manual_begin();
+
+	if (err) {
+		return err;
+	}
+	(void)safety_set_enable(MOTION_AXIS3, true);
+	return home_table() ? 0 : -EINTR;
+}
+
+int process_load(void)                /* #4..#9 */
+{
+	int err = manual_begin();
+
+	if (err) {
+		return err;
+	}
+	(void)safety_set_enable(MOTION_AXIS1, true);
+	/* #4 panel presented */
+	if (!wait_role(ROLE_PANEL_PRESENTED)) {
+		return -EINTR;
+	}
+	/* #5 conveyor infeed */
+	motion_run(MOTION_AXIS1, MOTION_POS, mset_rpm(MSET_CONVEY));
+	/* #6 panel near -> stop */
+	if (!wait_role(ROLE_PANEL_NEAR)) {
+		motion_stop(MOTION_AXIS1);
+		return -EINTR;
+	}
+	motion_stop(MOTION_AXIS1);
+#if CYLINDERS_ENABLED
+	/* #7 arm stopper, #8 confirm up */
+	solenoid_set(SOLENOID1, SOLENOID_A);
+	if (!confirm(8, ROLE_CYL1_UP, "Stopper armed")) {
+		return -EINTR;
+	}
+#endif
+	/* #9 creep into position */
+	return go_steps(MOTION_AXIS1, MOTION_POS, mset_steps(MSET_CREEP), mset_rpm(MSET_CREEP))
+		       ? 0 : -EINTR;
+}
+
+int process_table_down(void)          /* #10 */
+{
+	int err = manual_begin();
+
+	if (err) {
+		return err;
+	}
+	(void)safety_set_enable(MOTION_AXIS3, true);
+	if (!go_steps(MOTION_AXIS3, MOTION_NEG, mset_steps(MSET_DOWN1), mset_rpm(MSET_DOWN1))) {
+		return -EINTR;
+	}
+	return go_steps(MOTION_AXIS3, MOTION_NEG, mset_steps(MSET_DOWN2), mset_rpm(MSET_DOWN2))
+		       ? 0 : -EINTR;
+}
+
+int process_unload(void)              /* #25..#27 */
+{
+	int err = manual_begin();
+
+	if (err) {
+		return err;
+	}
+	(void)safety_set_enable(MOTION_AXIS1, true);
+	/* #25 conveyor infeed */
+	motion_run(MOTION_AXIS1, MOTION_POS, mset_rpm(MSET_OUT));
+	/* #26 panel in position -> #27 stop */
+	if (!wait_role(ROLE_PANEL_IN_POSITION)) {
+		motion_stop(MOTION_AXIS1);
+		return -EINTR;
+	}
+	motion_stop(MOTION_AXIS1);
+	return 0;
 }
 
 static void sequence(void *p1, void *p2, void *p3)
@@ -177,6 +315,7 @@ static void sequence(void *p1, void *p2, void *p3)
 		k_sem_take(&start_sem, K_FOREVER);
 	}
 
+	restart_req = false;   /* consume the start token from the safe-hold release */
 	enable_all_motors();
 	selftest_bob();
 	home_table();
@@ -186,9 +325,17 @@ static void sequence(void *p1, void *p2, void *p3)
 			k_msleep(200);
 			continue;
 		}
+		if (manual_hold) {          /* a manual command owns the machine */
+			k_msleep(50);
+			continue;
+		}
 
 		/* #2 idle */
+#if SMEMA_ENABLED
 		evlog(2, '.', "Idle: waiting for upstream SMEMA Board Available (PC1)");
+#else
+		evlog(2, '.', "SMEMA disabled (live test) - no upstream handshake, gate on Laser 1");
+#endif
 		if (!wait_up_board_available()) {
 			continue;
 		}
@@ -199,17 +346,21 @@ static void sequence(void *p1, void *p2, void *p3)
 		evlog_cycle_start(cycle);
 		evlog(3, '>', "Upstream Ready HIGH (PC2). Waiting for panel presented [panel_presented=%s %s]", RS(ROLE_PANEL_PRESENTED));
 
-		/* #4 panel presented */
-		if (!wait_role(ROLE_PANEL_PRESENTED)) {
-			goto abort;
+		/* #4 panel presented — don't start a cycle while a manual command holds */
+		while (manual_hold || !role_read(ROLE_PANEL_PRESENTED)) {
+			if (interrupted()) {
+				goto abort;
+			}
+			k_msleep(POLL_MS);
 		}
+		cycle_active = true;
 		evlog(4, '<', "Panel presented at infeed - [panel_presented=%s %s] closed", RS(ROLE_PANEL_PRESENTED));
 		io_smema_set_upstream_machine_ready(false);
 
-		/* #5 conveyor infeed at 40 rpm — stopper stays DOWN so the belt can move */
+		/* #5 conveyor infeed (set 2 rpm) — stopper stays DOWN so the belt can move */
 		step_gap();
-		motion_run(MOTION_AXIS1, MOTION_POS, 40);
-		evlog(5, '>', "Motor 1 rotating positive 40 rpm infeed, stopper down (PLS-1 PE5). Waiting for [panel_near=%s %s]", RS(ROLE_PANEL_NEAR));
+		motion_run(MOTION_AXIS1, MOTION_POS, mset_rpm(MSET_CONVEY));
+		evlog(5, '>', "Motor 1 infeed %u rpm, stopper down (PLS-1 PE5). Waiting for [panel_near=%s %s]", mset_rpm(MSET_CONVEY), RS(ROLE_PANEL_NEAR));
 		/* #6 middle panel near — stop the 40 rpm feed */
 		if (!wait_role(ROLE_PANEL_NEAR)) {
 			goto abort;
@@ -225,20 +376,20 @@ static void sequence(void *p1, void *p2, void *p3)
 			goto abort;
 		}
 
-		/* #9 creep the panel 1/2 rev into the stopper, then stop */
+		/* #9 creep the panel into the stopper (set 3), then stop */
 		step_gap();
-		if (!go_steps(MOTION_AXIS1, MOTION_POS, CREEP_STEPS, 10)) {
+		if (!go_steps(MOTION_AXIS1, MOTION_POS, mset_steps(MSET_CREEP), mset_rpm(MSET_CREEP))) {
 			goto abort;
 		}
-		evlog(9, '>', "Motor 1 creep positive 10 rpm 1/2 rev into stopper then stop (PLS-1 PE5)");
+		evlog(9, '>', "Motor 1 creep %u rpm into stopper then stop (PLS-1 PE5)", mset_rpm(MSET_CREEP));
 
-		/* #10 table DOWN to test position: negative 21 rev (20@40 + 1@10) */
+		/* #10 table DOWN to test position: two phases (set 4 + set 5) */
 		step_gap();
-		if (!go(MOTION_AXIS3, MOTION_NEG, 20, 40) ||
-		    !go(MOTION_AXIS3, MOTION_NEG, 1, 10)) {
+		if (!go_steps(MOTION_AXIS3, MOTION_NEG, mset_steps(MSET_DOWN1), mset_rpm(MSET_DOWN1)) ||
+		    !go_steps(MOTION_AXIS3, MOTION_NEG, mset_steps(MSET_DOWN2), mset_rpm(MSET_DOWN2))) {
 			goto abort;
 		}
-		evlog(10, '>', "Table DOWN to test: motors 3+4 negative 21 rev (20@40 + 1@10) (PLS-3 PC8)");
+		evlog(10, '>', "Table DOWN to test: motors 3+4 negative (p1 %u rpm + p2 %u rpm) (PLS-3 PC8)", mset_rpm(MSET_DOWN1), mset_rpm(MSET_DOWN2));
 
 		/* #11 arm RFID, #12 confirm up */
 		step_gap();
@@ -254,9 +405,9 @@ static void sequence(void *p1, void *p2, void *p3)
 
 		/* #14 arm panel locker, #15 confirm up */
 		step_gap();
-		solenoid_set(SOLENOID3, SOLENOID_A);
-		evlog(14, '>', "Arm panel locker: Solenoid 3 coil 1 pulse 60ms (PD10)");
-		if (!confirm(15, ROLE_CYL3_UP, "Panel locker armed")) {
+		solenoid_set(SOLENOID3, SOLENOID_B);
+		evlog(14, '>', "Arm panel locker: Solenoid 3 coil 2 (PD11)");
+		if (!confirm(15, ROLE_CYL3_DOWN, "Panel locker armed (down)")) {
 			goto abort;
 		}
 
@@ -269,13 +420,10 @@ static void sequence(void *p1, void *p2, void *p3)
 		/* #17 ack (production: wait for the programmer's UART OK) */
 		evlog(17, '<', "Programming and testing OK (acknowledged)");
 
-		/* #18 table UP to home: positive 20@40 then creep until table_home */
+		/* #18 table UP to home: single-phase at homing speed (set 1) until Photo 10. */
 		step_gap();
-		if (!go(MOTION_AXIS3, MOTION_POS, 20, 40)) {
-			goto abort;
-		}
-		motion_run(MOTION_AXIS3, MOTION_POS, 10);
-		evlog(18, '>', "Table UP to home: motors 3+4 positive 20 rev then creep until table home (PLS-3 PC8). Waiting for [table_home=%s %s]", RS(ROLE_TABLE_HOME));
+		motion_run(MOTION_AXIS3, MOTION_POS, mset_rpm(MSET_HOME));
+		evlog(18, '>', "Table UP to home: motors 3+4 positive %u rpm until table home (PLS-3 PC8). Waiting for [table_home=%s %s]", mset_rpm(MSET_HOME), RS(ROLE_TABLE_HOME));
 		if (!wait_role(ROLE_TABLE_HOME)) {
 			goto abort;
 		}
@@ -292,9 +440,9 @@ static void sequence(void *p1, void *p2, void *p3)
 
 		/* #21 release panel locker, #22 confirm down */
 		step_gap();
-		solenoid_set(SOLENOID3, SOLENOID_B);
-		evlog(21, '>', "Release panel locker: Solenoid 3 coil 2 pulse 60ms (PD11)");
-		if (!confirm(22, ROLE_CYL3_DOWN, "Panel locker released")) {
+		solenoid_set(SOLENOID3, SOLENOID_A);
+		evlog(21, '>', "Release panel locker: Solenoid 3 coil 1 (PD10)");
+		if (!confirm(22, ROLE_CYL3_UP, "Panel locker released (up)")) {
 			goto abort;
 		}
 
@@ -306,10 +454,10 @@ static void sequence(void *p1, void *p2, void *p3)
 			goto abort;
 		}
 
-		/* #25 conveyor to outfeed */
+		/* #25 conveyor to outfeed (set 6) */
 		step_gap();
-		motion_run(MOTION_AXIS1, MOTION_POS, 40);
-		evlog(25, '>', "Motor 1 rotating positive 40 rpm to outfeed (PLS-1 PE5). Waiting for [panel_in_position=%s %s]", RS(ROLE_PANEL_IN_POSITION));
+		motion_run(MOTION_AXIS1, MOTION_POS, mset_rpm(MSET_OUT));
+		evlog(25, '>', "Motor 1 %u rpm to outfeed (PLS-1 PE5). Waiting for [panel_in_position=%s %s]", mset_rpm(MSET_OUT), RS(ROLE_PANEL_IN_POSITION));
 		/* #26 */
 		if (!wait_role(ROLE_PANEL_IN_POSITION)) {
 			goto abort;
@@ -322,34 +470,58 @@ static void sequence(void *p1, void *p2, void *p3)
 		/* #28 hand off downstream */
 		step_gap();
 		io_smema_set_downstream_board_available(true);
+#if SMEMA_ENABLED
 		evlog(28, '>', "Offer panel downstream: SMEMA Board Available HIGH (PC3). Waiting for downstream Machine Ready (PA1)");
+#else
+		evlog(28, '>', "SMEMA disabled (live test) - no downstream handshake, ejecting");
+#endif
 		/* #29 */
 		if (!wait_down_machine_ready()) {
 			goto abort;
 		}
+#if SMEMA_ENABLED
 		evlog(29, '<', "Downstream ready - SMEMA Machine Ready (PA1) closed");
+#endif
 
-		/* #30 eject */
+		/* #30 eject (set 7): run the conveyor until the panel clears Laser 3 */
 		step_gap();
-		if (!go(MOTION_AXIS1, MOTION_POS, 20, 20)) {
+		motion_run(MOTION_AXIS1, MOTION_POS, mset_rpm(MSET_EJECT));
+		evlog(30, '>', "Eject panel: Motor 1 positive %u rpm until panel out (PLS-1 PE5). Waiting for [panel_in_position=%s %s] to OPEN", mset_rpm(MSET_EJECT), RS(ROLE_PANEL_IN_POSITION));
+		/* #31 panel out — Laser 3 opens */
+		if (!wait_role_clear(ROLE_PANEL_IN_POSITION)) {
 			goto abort;
 		}
-		evlog(30, '>', "Eject panel: Motor 1 rotating positive 20 rev at 20 rpm (PLS-1 PE5)");
+		evlog(31, '<', "Panel out - [panel_in_position=%s %s] opened", RS(ROLE_PANEL_IN_POSITION));
+		/* #32 stop conveyor */
+		motion_stop(MOTION_AXIS1);
+		evlog(32, '>', "Stop conveyor: Motor 1 stop after panel out (PLS-1 PE5)");
 		io_smema_set_downstream_board_available(false);
 
+		cycle_active = false;
 		evlog_cycle_end(cycle);
 		continue;
 
 abort:
+		cycle_active = false;
 		motion_stop_all();
 		io_smema_set_upstream_machine_ready(false);
 		io_smema_set_downstream_board_available(false);
-		evlog(0, '!', "ABORTED (fault): motion stopped, ENA released. Run 'infeed reset' to recover");
-		while (safety_in_fault()) {
-			k_msleep(100);
+		if (restart_req) {
+			/* `infeed start` pressed while running: re-home + fresh run. */
+			evlog(0, '.', "Restart ('infeed start'): re-home + new run");
+			restart_req = false;
+			k_sem_reset(&start_sem);
+			enable_all_motors();
+			selftest_bob();
+			home_table();
+		} else {
+			evlog(0, '!', "ABORTED (fault): motion stopped, ENA released. Run 'infeed reset' to recover");
+			while (safety_in_fault()) {
+				k_msleep(100);
+			}
+			enable_all_motors();
+			home_table();
 		}
-		enable_all_motors();
-		home_table();
 	}
 }
 

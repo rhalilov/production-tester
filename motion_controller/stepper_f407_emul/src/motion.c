@@ -3,7 +3,7 @@
 #include <errno.h>
 #include <zephyr/device.h>
 #include <zephyr/drivers/gpio.h>
-#include <zephyr/drivers/stepper/stepper_ctrl.h>
+#include <zephyr/drivers/stepper.h>
 #include <zephyr/logging/log.h>
 
 LOG_MODULE_REGISTER(motion, LOG_LEVEL_INF);
@@ -33,12 +33,12 @@ static uint64_t interval_ns(uint32_t rpm)
 	return 60000000000ULL / ((uint64_t)rpm * STEPS_PER_REV);
 }
 
-static void on_event(const struct device *dev, enum stepper_ctrl_event event, void *ud)
+static void on_event(const struct device *dev, enum stepper_event event, void *ud)
 {
 	ARG_UNUSED(dev);
 	int axis = (int)(uintptr_t)ud;
 
-	if (event == STEPPER_CTRL_EVENT_STEPS_COMPLETED || event == STEPPER_CTRL_EVENT_STOPPED) {
+	if (event == STEPPER_EVENT_STEPS_COMPLETED || event == STEPPER_EVENT_STOPPED) {
 		moving[axis] = false;
 		cur_dir[axis] = 0;
 		k_sem_give(&done[axis]);
@@ -56,7 +56,7 @@ int motion_init(void)
 			missing++;
 			continue;
 		}
-		(void)stepper_ctrl_set_event_cb(axis_dev[i], on_event,
+		(void)stepper_set_event_callback(axis_dev[i], on_event,
 						 (void *)(uintptr_t)i);
 	}
 
@@ -77,7 +77,7 @@ int motion_go_steps(enum motion_axis axis, enum motion_dir dir, uint32_t steps, 
 	int err;
 
 	k_sem_reset(&done[axis]);
-	err = stepper_ctrl_set_microstep_interval(dev, interval_ns(rpm));
+	err = stepper_set_microstep_interval(dev, interval_ns(rpm));
 	if (err) {
 		return err;
 	}
@@ -87,7 +87,7 @@ int motion_go_steps(enum motion_axis axis, enum motion_dir dir, uint32_t steps, 
 	cur_dir[axis] = req;                        /* LEDs/motion_dir stay logical */
 	moving[axis] = true;
 
-	err = stepper_ctrl_move_by(dev, (int32_t)steps * phys);
+	err = stepper_move_by(dev, (int32_t)steps * phys);
 	if (err) {
 		moving[axis] = false;
 		cur_dir[axis] = 0;
@@ -98,7 +98,7 @@ int motion_go_steps(enum motion_axis axis, enum motion_dir dir, uint32_t steps, 
 	uint64_t exp_ms = (uint64_t)steps * 60000ULL / ((uint64_t)rpm * STEPS_PER_REV);
 
 	if (k_sem_take(&done[axis], K_MSEC(exp_ms * 2 + 2000)) != 0) {
-		(void)stepper_ctrl_stop(dev);
+		(void)stepper_stop(dev);
 		moving[axis] = false;
 		cur_dir[axis] = 0;
 		LOG_WRN("axis%d move timeout", axis + 1);
@@ -118,7 +118,7 @@ int motion_run(enum motion_axis axis, enum motion_dir dir, uint32_t rpm)
 		return -EINVAL;
 	}
 	const struct device *dev = axis_dev[axis];
-	int err = stepper_ctrl_set_microstep_interval(dev, interval_ns(rpm));
+	int err = stepper_set_microstep_interval(dev, interval_ns(rpm));
 
 	if (err) {
 		return err;
@@ -128,8 +128,8 @@ int motion_run(enum motion_axis axis, enum motion_dir dir, uint32_t rpm)
 
 	cur_dir[axis] = req;
 	moving[axis] = true;
-	return stepper_ctrl_run(dev, (phys > 0) ? STEPPER_CTRL_DIRECTION_POSITIVE
-					   : STEPPER_CTRL_DIRECTION_NEGATIVE);
+	return stepper_run(dev, (phys > 0) ? STEPPER_DIRECTION_POSITIVE
+					   : STEPPER_DIRECTION_NEGATIVE);
 }
 
 void motion_stop(enum motion_axis axis)
@@ -137,7 +137,7 @@ void motion_stop(enum motion_axis axis)
 	if (axis < 0 || axis >= MOTION_AXIS_COUNT) {
 		return;
 	}
-	(void)stepper_ctrl_stop(axis_dev[axis]);
+	(void)stepper_stop(axis_dev[axis]);
 	moving[axis] = false;
 	cur_dir[axis] = 0;
 }
