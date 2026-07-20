@@ -1,3 +1,4 @@
+#include "app.h"
 #include "engine/engine.h"
 #include "engine/step.h"
 #include "components/stepper_motor.h"
@@ -29,7 +30,7 @@ static void scan_timer_handler(struct k_timer *timer)
 
 int main(void)
 {
-    LOG_INF("prod-tester-motion-ctrl starting");
+    LOG_INF("prod-tester-motion-ctrl v0.1.0 starting");
 
     int err = config_store.init();
     if (err) {
@@ -48,10 +49,8 @@ int main(void)
         return err;
     }
 
-    LOG_INF("System ready. Waiting for 'start' command.");
+    app::init(&sfc_engine, &machine_context, &scan_timer);
 
-    // Scan timer starts when engine is started via CLI
-    // k_timer_start(&scan_timer, K_MSEC(CONFIG_SCAN_PERIOD_MS), K_MSEC(CONFIG_SCAN_PERIOD_MS));
-
+    LOG_INF("System ready. Type 'mc start' to begin.");
     return 0;
 }

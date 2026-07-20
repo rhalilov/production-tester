@@ -5,6 +5,7 @@ project(prod-tester-motion-ctrl LANGUAGES CXX C)
 # Common sources (universal, machine-independent)
 target_sources(app PRIVATE
     src/main.cpp
+    src/app.cpp
     src/hal/gpio_pin.cpp
     src/components/stepper_motor.cpp
     src/components/cylinder.cpp
