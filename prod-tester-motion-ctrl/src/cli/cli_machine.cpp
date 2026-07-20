@@ -144,9 +144,27 @@ static int cmd_step_current(const struct shell *sh, size_t argc, char **argv)
     return 0;
 }
 
+static int cmd_step_list(const struct shell *sh, size_t argc, char **argv)
+{
+    auto *eng = app::engine();
+    if (!eng) { shell_error(sh, "not init"); return -EINVAL; }
+
+    int count = eng->config().step_count;
+    int cur = eng->currentStepIndex();
+
+    shell_print(sh, "=== Sequence (%d steps) ===", count);
+    for (int i = 0; i < count; i++) {
+        const char *marker = (i == cur && eng->isRunning()) ? " <<" : "";
+        shell_print(sh, "  [%2d] %s%s",
+                    i, eng->config().steps[i].name, marker);
+    }
+    return 0;
+}
+
 SHELL_STATIC_SUBCMD_SET_CREATE(step_cmds,
     SHELL_CMD(next, NULL, "Advance one step (STEP mode)", cmd_step_next),
     SHELL_CMD(current, NULL, "Show current step", cmd_step_current),
+    SHELL_CMD(list, NULL, "List all steps in sequence", cmd_step_list),
     SHELL_SUBCMD_SET_END
 );
 
