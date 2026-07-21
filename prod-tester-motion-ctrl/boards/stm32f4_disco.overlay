@@ -60,8 +60,8 @@
 };
 / {
 	chosen {
-		zephyr,console    = &cdc_acm_uart0;
-		zephyr,shell-uart = &cdc_acm_uart0;
+		zephyr,console    = &usart3;
+		zephyr,shell-uart = &usart3;
 	};
 };
 &usart2 { status = "disabled"; };
