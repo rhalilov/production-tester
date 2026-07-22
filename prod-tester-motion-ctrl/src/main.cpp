@@ -92,6 +92,12 @@ int main(void)
         }
     }
 
-    LOG_INF("System ready. Type 'mc start' to begin.");
+    LOG_INF("Auto-starting sequence...");
+    machine_context.conveyor->setEnabled(true);
+    machine_context.table->setEnabled(true);
+    sfc_engine.setMode(engine::OperatingMode::AUTO);
+    sfc_engine.start();
+    app::startScan();
+    LOG_INF("System running.");
     return 0;
 }

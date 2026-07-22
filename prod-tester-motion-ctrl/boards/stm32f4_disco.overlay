@@ -161,7 +161,7 @@
 
 		/* SMEMA conveyor handshake */
 		smema-up-board-available-gpios   = <&gpioc 1 (GPIO_ACTIVE_LOW | GPIO_PULL_UP)>;
-		smema-up-machine-ready-gpios     = <&gpioc 2 GPIO_ACTIVE_HIGH>;
+		smema-up-machine-ready-gpios     = <&gpioa 0 GPIO_ACTIVE_HIGH>;
 		smema-down-board-available-gpios = <&gpioc 3 GPIO_ACTIVE_HIGH>;
 		smema-down-machine-ready-gpios   = <&gpioa 1 (GPIO_ACTIVE_LOW | GPIO_PULL_UP)>;
 		smema-down-board-available-fail-gpios = <&gpioa 3 GPIO_ACTIVE_HIGH>;

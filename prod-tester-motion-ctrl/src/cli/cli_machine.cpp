@@ -19,13 +19,13 @@ static int detect_start_step(engine::Context *ctx)
 
     // laser2 has priority — board is at work position
     if (ctx->laser2->raw()) {
-        return 3;   // arm_stopper (board at work position)
+        return 4;   // arm_stopper (board at work position)
     }
     if (ctx->laser3->raw()) {
-        return 16;  // eject (board at exit)
+        return 17;  // eject (board at exit)
     }
     if (ctx->laser1->raw()) {
-        return 1;   // wait_panel (board at infeed)
+        return 2;   // wait_panel (board entering)
     }
     return 0;       // idle
 }
@@ -49,6 +49,8 @@ static int cmd_start(const struct shell *sh, size_t argc, char **argv)
 
     ctx->conveyor->setEnabled(true);
     ctx->table->setEnabled(true);
+
+    // SFC on_entry handles Machine Ready and conveyor at the appropriate step
 
     eng->setMode(engine::OperatingMode::AUTO);
     eng->start();
