@@ -6,11 +6,37 @@
 
 #include <stdlib.h>
 #include <zephyr/shell/shell.h>
+#include <zephyr/kernel.h>
 #include <zephyr/logging/log.h>
 
 LOG_MODULE_REGISTER(cli_manual, LOG_LEVEL_INF);
 
 using namespace component;
+
+static bool check_abort(const struct shell *sh)
+{
+    const struct shell_transport *transport = sh->iface;
+    uint8_t c;
+    size_t cnt = 0;
+
+    if (transport->api->read(transport, &c, sizeof(c), &cnt) == 0 && cnt > 0) {
+        if (c == 0x03) return true;  // Ctrl+C
+    }
+    return false;
+}
+
+static bool wait_motor_interruptible(const struct shell *sh, StepperMotor *motor)
+{
+    while (motor->isMoving()) {
+        if (check_abort(sh)) {
+            motor->abortMove();
+            shell_warn(sh, "Aborted (Ctrl+C)");
+            return false;
+        }
+        k_msleep(20);
+    }
+    return true;
+}
 
 static StepperMotor *get_motor(const struct shell *sh, const char *arg)
 {
@@ -113,7 +139,7 @@ static int cmd_motor(const struct shell *sh, size_t argc, char **argv)
     }
 
     if (strcmp(cmd, "home") == 0) {
-        shell_print(sh, "Homing motor %s...", argv[1]);
+        shell_print(sh, "Homing motor %s... (Ctrl+C to abort)", argv[1]);
         int err = motor->home();
         if (err) {
             shell_error(sh, "Home failed: %d", err);
@@ -146,11 +172,14 @@ static int cmd_motor(const struct shell *sh, size_t argc, char **argv)
         }
         int32_t steps = atoi(argv[3]);
         uint32_t rpm = atoi(argv[4]);
-        shell_print(sh, "Motor %s go %d steps @ %u rpm...", argv[1], steps, rpm);
-        auto err = motor->go(steps, rpm);
+        shell_print(sh, "Motor %s go %d steps @ %u rpm (Ctrl+C to abort)...", argv[1], steps, rpm);
+        auto err = motor->startGo(steps, rpm);
         if (err != StepperMotor::Error::OK) {
             shell_error(sh, "go failed: %d", (int)err);
             return -EIO;
+        }
+        if (!wait_motor_interruptible(sh, motor)) {
+            return -ECANCELED;
         }
         shell_print(sh, "OK — position=%d", motor->position());
         return 0;
@@ -169,12 +198,17 @@ static int cmd_motor(const struct shell *sh, size_t argc, char **argv)
         float mm = strtof(argv[3], nullptr);
         int32_t steps = (int32_t)(mm * (float)motor->config().steps_per_rev / mm_per_rev);
         uint32_t rpm = atoi(argv[4]);
-        shell_print(sh, "Motor %s go %.2f mm (%d steps) @ %u rpm...",
+        shell_print(sh, "Motor %s go %.2f mm (%d steps) @ %u rpm (Ctrl+C to abort)...",
                     argv[1], (double)mm, steps, rpm);
-        auto err = motor->go(steps, rpm);
+        auto err = motor->startGo(steps, rpm);
         if (err != StepperMotor::Error::OK) {
             shell_error(sh, "go failed: %d", (int)err);
             return -EIO;
+        }
+        if (!wait_motor_interruptible(sh, motor)) {
+            float pos_mm = (float)motor->position() * mm_per_rev / (float)motor->config().steps_per_rev;
+            shell_print(sh, "Stopped at position=%d (%.2f mm)", motor->position(), (double)pos_mm);
+            return -ECANCELED;
         }
         float pos_mm = (float)motor->position() * mm_per_rev / (float)motor->config().steps_per_rev;
         shell_print(sh, "OK — position=%d (%.2f mm)", motor->position(), (double)pos_mm);

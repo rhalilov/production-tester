@@ -40,6 +40,14 @@ public:
     void interrupt() { interrupted_ = true; }
     void clearInterrupt() { interrupted_ = false; }
 
+    // Direct access to modify sensor mapping
+    void setSensorA(const gpio_dt_spec *pin) {
+        if (cfg_) const_cast<CylinderConfig *>(cfg_)->sensor_a = pin;
+    }
+    void setSensorB(const gpio_dt_spec *pin) {
+        if (cfg_) const_cast<CylinderConfig *>(cfg_)->sensor_b = pin;
+    }
+
     const CylinderConfig &config() const { return *cfg_; }
 
 private:

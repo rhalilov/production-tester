@@ -4,8 +4,14 @@
 
 namespace config {
 
+struct TablePositions {
+    float guides_clear;     // mm from home — guides out of board
+    float pins_touch;       // mm from home — probes just touching
+    float pins_contact;     // mm from home — full contact (test)
+};
+
 struct Recipe {
-    static constexpr uint16_t CURRENT_VERSION = 1;
+    static constexpr uint16_t CURRENT_VERSION = 2;
 
     uint16_t version;
     char name[32];
@@ -16,6 +22,9 @@ struct Recipe {
         uint32_t steps;     // 0 = continuous (rpm-only)
     };
     MotorPreset motor_presets[7];
+
+    // Named table positions (absolute mm from home, negative = down)
+    TablePositions table_pos;
 
     // Cylinder timeout
     uint32_t cylinder_timeout_ms;

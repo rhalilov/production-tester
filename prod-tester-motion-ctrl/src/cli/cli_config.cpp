@@ -3,10 +3,12 @@
 #include "app.h"
 #include "engine/context.h"
 #include "components/stepper_motor.h"
+#include "components/cylinder.h"
 
 #include <stdlib.h>
 #include <string.h>
 #include <zephyr/shell/shell.h>
+#include <zephyr/drivers/gpio.h>
 #include <zephyr/settings/settings.h>
 #include <zephyr/logging/log.h>
 
@@ -77,17 +79,101 @@ static int motor_params_set(const char *name, size_t len,
 
 SETTINGS_STATIC_HANDLER_DEFINE(motor_cfg, "mcfg", NULL, motor_params_set, NULL, NULL);
 
+// --- Table positions persistence ---
+
+static config::TablePositions saved_table_pos;
+static bool table_pos_loaded;
+
+static int table_pos_set(const char *name, size_t len,
+                         settings_read_cb read_cb, void *cb_arg)
+{
+    const char *next;
+    if (settings_name_steq(name, "pos", &next) && !next) {
+        if (len != sizeof(saved_table_pos)) return -EINVAL;
+        if (read_cb(cb_arg, &saved_table_pos, sizeof(saved_table_pos)) < 0) return -EINVAL;
+        table_pos_loaded = true;
+        LOG_INF("loaded table positions from flash");
+        return 0;
+    }
+    return -ENOENT;
+}
+
+SETTINGS_STATIC_HANDLER_DEFINE(table_cfg, "tcfg", NULL, table_pos_set, NULL, NULL);
+
+// --- Sensor & Cylinder config persistence ---
+
+struct IoConfig {
+    bool sensor_active_high[10];  // laser1..3, table_home, ind4..ind9
+    uint8_t cyl_sensor_a[3];     // stopper, rfid, locker: index 0..5 = ind4..ind9
+    uint8_t cyl_sensor_b[3];
+};
+
+static IoConfig saved_io_cfg;
+static bool io_cfg_loaded;
+
+static int io_cfg_set(const char *name, size_t len,
+                      settings_read_cb read_cb, void *cb_arg)
+{
+    const char *next;
+    if (settings_name_steq(name, "io", &next) && !next) {
+        if (len != sizeof(saved_io_cfg)) return -EINVAL;
+        if (read_cb(cb_arg, &saved_io_cfg, sizeof(saved_io_cfg)) < 0) return -EINVAL;
+        io_cfg_loaded = true;
+        LOG_INF("loaded IO config from flash");
+        return 0;
+    }
+    return -ENOENT;
+}
+
+SETTINGS_STATIC_HANDLER_DEFINE(io_cfg_h, "iocfg", NULL, io_cfg_set, NULL, NULL);
+
 void config_apply_saved(void)
 {
-    if (!params_loaded) return;
+    if (!params_loaded && !table_pos_loaded && !io_cfg_loaded) return;
     auto *ctx = app::context();
     if (!ctx) return;
 
-    StepperMotor *motors[] = { ctx->conveyor, ctx->width, ctx->table };
-    for (int i = 0; i < 3; i++) {
-        apply_params(i, motors[i]);
+    if (params_loaded) {
+        StepperMotor *motors[] = { ctx->conveyor, ctx->width, ctx->table };
+        for (int i = 0; i < 3; i++) {
+            apply_params(i, motors[i]);
+        }
+        LOG_INF("applied saved motor params");
     }
-    LOG_INF("applied saved motor params");
+
+    if (table_pos_loaded && ctx->recipe) {
+        ctx->recipe->table_pos = saved_table_pos;
+        LOG_INF("applied saved table positions: gc=%.1f pt=%.1f pc=%.1f",
+                (double)saved_table_pos.guides_clear,
+                (double)saved_table_pos.pins_touch,
+                (double)saved_table_pos.pins_contact);
+    }
+
+    if (io_cfg_loaded) {
+        component::Sensor *sensors[] = {
+            ctx->laser1, ctx->laser2, ctx->laser3, ctx->table_home,
+            ctx->cyl1_a, ctx->cyl1_b, ctx->cyl2_a, ctx->cyl2_b,
+            ctx->cyl3_a, ctx->cyl3_b
+        };
+        for (int i = 0; i < 10; i++) {
+            sensors[i]->setActiveHigh(saved_io_cfg.sensor_active_high[i]);
+        }
+
+        // Apply cylinder sensor mapping
+        component::Sensor *inds[] = {
+            ctx->cyl3_a, ctx->cyl3_b,   // ind4, ind5
+            ctx->cyl1_a, ctx->cyl1_b,   // ind6, ind7
+            ctx->cyl2_a, ctx->cyl2_b,   // ind8, ind9
+        };
+        component::Cylinder *cyls[] = { ctx->stopper, ctx->rfid, ctx->locker };
+        for (int i = 0; i < 3; i++) {
+            uint8_t ia = saved_io_cfg.cyl_sensor_a[i];
+            uint8_t ib = saved_io_cfg.cyl_sensor_b[i];
+            if (ia < 6) cyls[i]->setSensorA(inds[ia]->config().pin);
+            if (ib < 6) cyls[i]->setSensorB(inds[ib]->config().pin);
+        }
+        LOG_INF("applied saved IO config (sensors + cylinder mapping)");
+    }
 }
 
 // --- CLI commands ---
@@ -137,6 +223,16 @@ static int cmd_show(const struct shell *sh, size_t argc, char **argv)
     print_cfg("2 width", ctx->width);
     print_cfg("3 table", ctx->table);
 
+    // Table positions
+    if (ctx->recipe) {
+        const auto &tp = ctx->recipe->table_pos;
+        shell_print(sh, "[table positions]");
+        shell_print(sh, "  guides_clear = %.2f mm", (double)tp.guides_clear);
+        shell_print(sh, "  pins_touch   = %.2f mm", (double)tp.pins_touch);
+        shell_print(sh, "  pins_contact = %.2f mm", (double)tp.pins_contact);
+        shell_print(sh, "");
+    }
+
     shell_print(sh, "(%s)", params_loaded ? "loaded from flash" : "defaults — not saved yet");
     return 0;
 }
@@ -155,6 +251,7 @@ static int cmd_set(const struct shell *sh, size_t argc, char **argv)
         shell_print(sh, "usage: cfg set <motor> <param> <value>");
         shell_print(sh, "  motor: 1|conveyor, 2|width, 3|table");
         shell_print(sh, "  proc_eng params: home_rpm, safe_pos, accel_start, accel_rate");
+        shell_print(sh, "  proc_eng (table): guides_clear, pins_touch, pins_contact (mm)");
         shell_print(sh, "  factory params:  invert_dir, steps_per_rev, mm_per_rev,");
         shell_print(sh, "                   limit_min, limit_max, limit_here");
         return -EINVAL;
@@ -238,6 +335,18 @@ static int cmd_set(const struct shell *sh, size_t argc, char **argv)
     } else if (strcmp(param, "accel_rate") == 0) {
         cfg->accel.accel_rpm_s = atoi(val_str);
         shell_print(sh, "accel.accel_rpm_s = %u", cfg->accel.accel_rpm_s);
+    } else if (strcmp(param, "guides_clear") == 0) {
+        if (!ctx->recipe) { shell_error(sh, "no recipe"); return -EINVAL; }
+        ctx->recipe->table_pos.guides_clear = strtof(val_str, nullptr);
+        shell_print(sh, "table_pos.guides_clear = %.2f mm", (double)ctx->recipe->table_pos.guides_clear);
+    } else if (strcmp(param, "pins_touch") == 0) {
+        if (!ctx->recipe) { shell_error(sh, "no recipe"); return -EINVAL; }
+        ctx->recipe->table_pos.pins_touch = strtof(val_str, nullptr);
+        shell_print(sh, "table_pos.pins_touch = %.2f mm", (double)ctx->recipe->table_pos.pins_touch);
+    } else if (strcmp(param, "pins_contact") == 0) {
+        if (!ctx->recipe) { shell_error(sh, "no recipe"); return -EINVAL; }
+        ctx->recipe->table_pos.pins_contact = strtof(val_str, nullptr);
+        shell_print(sh, "table_pos.pins_contact = %.2f mm", (double)ctx->recipe->table_pos.pins_contact);
     } else {
         shell_error(sh, "Unknown param: %s", param);
         return -EINVAL;
@@ -268,7 +377,52 @@ static int cmd_save(const struct shell *sh, size_t argc, char **argv)
         }
     }
 
-    shell_print(sh, "All motor params saved to flash.");
+    if (ctx->recipe) {
+        int rc = settings_save_one("tcfg/pos", &ctx->recipe->table_pos,
+                                   sizeof(ctx->recipe->table_pos));
+        if (rc) {
+            shell_error(sh, "Failed to save table positions: %d", rc);
+            return rc;
+        }
+    }
+
+    // Save IO config (sensor polarity + cylinder sensor mapping)
+    {
+        IoConfig io;
+        component::Sensor *sensors[] = {
+            ctx->laser1, ctx->laser2, ctx->laser3, ctx->table_home,
+            ctx->cyl1_a, ctx->cyl1_b, ctx->cyl2_a, ctx->cyl2_b,
+            ctx->cyl3_a, ctx->cyl3_b
+        };
+        for (int i = 0; i < 10; i++) {
+            io.sensor_active_high[i] = sensors[i]->activeHigh();
+        }
+
+        // Store which ind sensor is assigned to each cylinder slot
+        component::Sensor *inds[] = {
+            ctx->cyl3_a, ctx->cyl3_b,   // ind4, ind5
+            ctx->cyl1_a, ctx->cyl1_b,   // ind6, ind7
+            ctx->cyl2_a, ctx->cyl2_b,   // ind8, ind9
+        };
+        component::Cylinder *cyls[] = { ctx->stopper, ctx->rfid, ctx->locker };
+        for (int i = 0; i < 3; i++) {
+            io.cyl_sensor_a[i] = 0xFF;
+            io.cyl_sensor_b[i] = 0xFF;
+            for (int j = 0; j < 6; j++) {
+                if (cyls[i]->config().sensor_a == inds[j]->config().pin)
+                    io.cyl_sensor_a[i] = j;
+                if (cyls[i]->config().sensor_b == inds[j]->config().pin)
+                    io.cyl_sensor_b[i] = j;
+            }
+        }
+        int rc = settings_save_one("iocfg/io", &io, sizeof(io));
+        if (rc) {
+            shell_error(sh, "Failed to save IO config: %d", rc);
+            return rc;
+        }
+    }
+
+    shell_print(sh, "All params saved to flash.");
     return 0;
 }
 
@@ -398,11 +552,208 @@ static int cmd_lock(const struct shell *sh, size_t argc, char **argv)
     return 0;
 }
 
+static component::Sensor *sensor_by_name(const char *name, engine::Context *ctx)
+{
+    if (strcmp(name, "laser1") == 0) return ctx->laser1;
+    if (strcmp(name, "laser2") == 0) return ctx->laser2;
+    if (strcmp(name, "laser3") == 0) return ctx->laser3;
+    if (strcmp(name, "table_home") == 0) return ctx->table_home;
+    if (strcmp(name, "ind6") == 0) return ctx->cyl1_a;
+    if (strcmp(name, "ind7") == 0) return ctx->cyl1_b;
+    if (strcmp(name, "ind8") == 0) return ctx->cyl2_a;
+    if (strcmp(name, "ind9") == 0) return ctx->cyl2_b;
+    if (strcmp(name, "ind4") == 0) return ctx->cyl3_a;
+    if (strcmp(name, "ind5") == 0) return ctx->cyl3_b;
+    return nullptr;
+}
+
+static int cmd_sensor(const struct shell *sh, size_t argc, char **argv)
+{
+    auto *ctx = app::context();
+    if (!ctx) { shell_error(sh, "not init"); return -EINVAL; }
+
+    if (argc < 2) {
+        shell_print(sh, "usage: cfg sensor [<name> <active_high 0|1>]");
+        shell_print(sh, "  No args: show all polarities");
+        shell_print(sh, "  names: laser1 laser2 laser3 table_home ind4..ind9");
+        return -EINVAL;
+    }
+
+    if (argc == 2 && strcmp(argv[1], "show") == 0) {
+        argc = 1; // fall through to show all
+    }
+
+    if (argc < 3) {
+        component::Sensor *all[] = {
+            ctx->laser1, ctx->laser2, ctx->laser3, ctx->table_home,
+            ctx->cyl1_a, ctx->cyl1_b, ctx->cyl2_a, ctx->cyl2_b,
+            ctx->cyl3_a, ctx->cyl3_b
+        };
+        shell_print(sh, "=== Sensor Polarity ===");
+        for (auto *s : all) {
+            shell_print(sh, "  %-12s active_high=%s", s->name(),
+                        s->activeHigh() ? "true" : "false");
+        }
+        return 0;
+    }
+
+    if (!app::isFactory()) {
+        shell_error(sh, "Factory access required. Run 'cfg unlock factory'.");
+        return -EACCES;
+    }
+
+    auto *sensor = sensor_by_name(argv[1], ctx);
+    if (!sensor) {
+        shell_error(sh, "Unknown sensor: %s", argv[1]);
+        return -EINVAL;
+    }
+
+    bool ah = (atoi(argv[2]) != 0 || strcmp(argv[2], "true") == 0);
+    sensor->setActiveHigh(ah);
+    shell_print(sh, "%s active_high = %s", argv[1], ah ? "true" : "false");
+    return 0;
+}
+
+static component::Cylinder *cylinder_by_name(const char *name, engine::Context *ctx)
+{
+    if (strcmp(name, "stopper") == 0 || strcmp(name, "1") == 0) return ctx->stopper;
+    if (strcmp(name, "rfid") == 0 || strcmp(name, "2") == 0) return ctx->rfid;
+    if (strcmp(name, "locker") == 0 || strcmp(name, "3") == 0) return ctx->locker;
+    return nullptr;
+}
+
+static int cmd_cylinder_cfg(const struct shell *sh, size_t argc, char **argv)
+{
+    auto *ctx = app::context();
+    if (!ctx) { shell_error(sh, "not init"); return -EINVAL; }
+
+    if (argc < 2) {
+        shell_print(sh, "usage: cfg cylinder fire <name> <a|b|off>  — fire single coil");
+        shell_print(sh, "       cfg cylinder read                   — read all sensors");
+        shell_print(sh, "       cfg cylinder map <name> <a|b> <indX> — assign sensor");
+        shell_print(sh, "  names: stopper|1, rfid|2, locker|3");
+        shell_print(sh, "  sensors: ind4, ind5, ind6, ind7, ind8, ind9");
+        return -EINVAL;
+    }
+
+    if (!app::isFactory()) {
+        shell_error(sh, "Factory access required. Run 'cfg unlock factory'.");
+        return -EACCES;
+    }
+
+    if (strcmp(argv[1], "fire") == 0) {
+        if (argc < 4) {
+            shell_error(sh, "usage: cfg cylinder fire <name> <a|b|off>");
+            return -EINVAL;
+        }
+        auto *cyl = cylinder_by_name(argv[2], ctx);
+        if (!cyl) {
+            shell_error(sh, "Unknown cylinder: %s", argv[2]);
+            return -EINVAL;
+        }
+
+        auto &cfg = cyl->config();
+
+        if (strcmp(argv[3], "off") == 0) {
+            gpio_pin_set_dt(cfg.coil_a, 0);
+            gpio_pin_set_dt(cfg.coil_b, 0);
+            shell_print(sh, "%s: coils OFF", argv[2]);
+        } else if (strcmp(argv[3], "a") == 0) {
+            gpio_pin_set_dt(cfg.coil_b, 0);
+            gpio_pin_set_dt(cfg.coil_a, 1);
+            shell_print(sh, "%s: coil_a ON", argv[2]);
+        } else if (strcmp(argv[3], "b") == 0) {
+            gpio_pin_set_dt(cfg.coil_a, 0);
+            gpio_pin_set_dt(cfg.coil_b, 1);
+            shell_print(sh, "%s: coil_b ON", argv[2]);
+        } else {
+            shell_error(sh, "Unknown: %s (a|b|off)", argv[3]);
+            return -EINVAL;
+        }
+        return 0;
+    }
+
+    if (strcmp(argv[1], "read") == 0) {
+        static int prev_state[6] = { -1, -1, -1, -1, -1, -1 };
+        component::Sensor *inds[] = {
+            ctx->cyl3_a, ctx->cyl3_b,   // ind4, ind5
+            ctx->cyl1_a, ctx->cyl1_b,   // ind6, ind7
+            ctx->cyl2_a, ctx->cyl2_b,   // ind8, ind9
+        };
+        const char *ind_names[] = { "ind4", "ind5", "ind6", "ind7", "ind8", "ind9" };
+        shell_print(sh, "  %-6s  prev  now", "name");
+        for (int i = 0; i < 6; i++) {
+            int cur = gpio_pin_get_dt(inds[i]->config().pin) != 0 ? 1 : 0;
+            if (prev_state[i] < 0) {
+                shell_print(sh, "  %-6s   -    %d", ind_names[i], cur);
+            } else if (cur != prev_state[i]) {
+                shell_fprintf(sh, SHELL_VT100_COLOR_YELLOW,
+                    "  %-6s   %d    %d  <--\n", ind_names[i], prev_state[i], cur);
+            } else {
+                shell_print(sh, "  %-6s   %d    %d", ind_names[i], prev_state[i], cur);
+            }
+            prev_state[i] = cur;
+        }
+        return 0;
+    }
+
+    if (strcmp(argv[1], "map") == 0) {
+        if (argc < 5) {
+            shell_error(sh, "usage: cfg cylinder map <name> <a|b> <indX>");
+            shell_print(sh, "  Example: cfg cylinder map stopper a ind5");
+            return -EINVAL;
+        }
+        auto *cyl = cylinder_by_name(argv[2], ctx);
+        if (!cyl) {
+            shell_error(sh, "Unknown cylinder: %s", argv[2]);
+            return -EINVAL;
+        }
+
+        // Resolve ind name to gpio_dt_spec pointer
+        component::Sensor *sens_all[] = {
+            ctx->cyl3_a, ctx->cyl3_b,   // ind4, ind5
+            ctx->cyl1_a, ctx->cyl1_b,   // ind6, ind7
+            ctx->cyl2_a, ctx->cyl2_b,   // ind8, ind9
+        };
+        const char *sens_names[] = { "ind4", "ind5", "ind6", "ind7", "ind8", "ind9" };
+
+        const gpio_dt_spec *pin = nullptr;
+        for (int i = 0; i < 6; i++) {
+            if (strcmp(argv[4], sens_names[i]) == 0) {
+                pin = sens_all[i]->config().pin;
+                break;
+            }
+        }
+        if (!pin) {
+            shell_error(sh, "Unknown sensor: %s (ind4..ind9)", argv[4]);
+            return -EINVAL;
+        }
+
+        if (strcmp(argv[3], "a") == 0) {
+            cyl->setSensorA(pin);
+            shell_print(sh, "%s: sensor_a = %s", argv[2], argv[4]);
+        } else if (strcmp(argv[3], "b") == 0) {
+            cyl->setSensorB(pin);
+            shell_print(sh, "%s: sensor_b = %s", argv[2], argv[4]);
+        } else {
+            shell_error(sh, "Unknown slot: %s (a|b)", argv[3]);
+            return -EINVAL;
+        }
+        shell_print(sh, "Run 'cfg save' to persist.");
+        return 0;
+    }
+
+    shell_error(sh, "Unknown: %s (fire|read|map)", argv[1]);
+    return -EINVAL;
+}
+
 SHELL_STATIC_SUBCMD_SET_CREATE(config_cmds,
     SHELL_CMD(show, NULL, "Show all motor parameters", cmd_show),
     SHELL_CMD(set, NULL, "Set param: cfg set <motor> <param> <value>", cmd_set),
     SHELL_CMD(save, NULL, "Save params to flash", cmd_save),
     SHELL_CMD(limit, NULL, "Soft limits per motor", cmd_limit),
+    SHELL_CMD(sensor, NULL, "Sensor polarity: cfg sensor <name> <0|1>", cmd_sensor),
+    SHELL_CMD(cylinder, NULL, "Cylinder: cfg cylinder fire|read|map", cmd_cylinder_cfg),
     SHELL_CMD(unlock, NULL, "Unlock access: cfg unlock <operator|proc_eng|factory>", cmd_unlock),
     SHELL_CMD(lock, NULL, "Lock to operator level", cmd_lock),
     SHELL_SUBCMD_SET_END

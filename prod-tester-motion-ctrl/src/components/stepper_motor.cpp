@@ -276,6 +276,59 @@ StepperMotor::Error StepperMotor::goTo(int32_t target, uint32_t rpm)
     return go(delta, rpm);
 }
 
+StepperMotor::Error StepperMotor::startGo(int32_t steps, uint32_t rpm)
+{
+    if (alarm_) return Error::IN_FAULT;
+    if (moving_) return Error::BUSY;
+    if (rpm == 0) return Error::NOT_READY;
+
+    if (cfg_->has_limits && homed_ && !app::isFactory()) {
+        int32_t target = position_ + steps;
+        if (!checkLimits(target)) {
+            return Error::SOFT_LIMIT;
+        }
+    }
+
+    int err = stepper_ctrl_set_microstep_interval(cfg_->stepper_dev, computeInterval(rpm));
+    if (err) return Error::NOT_READY;
+
+    MotionDir logical = (steps >= 0) ? MotionDir::POS : MotionDir::NEG;
+    int phys = physicalDir(logical);
+    int32_t abs_steps = (steps >= 0) ? steps : -steps;
+
+    k_sem_reset(&done_sem_);
+    cur_dir_ = logical;
+    moving_ = true;
+    pending_steps_ = steps;
+
+    err = stepper_ctrl_move_by(cfg_->stepper_dev, (int32_t)abs_steps * phys);
+    if (err) {
+        moving_ = false;
+        cur_dir_ = MotionDir::NONE;
+        pending_steps_ = 0;
+        return Error::NOT_READY;
+    }
+
+    return Error::OK;
+}
+
+StepperMotor::Error StepperMotor::startGoTo(int32_t target, uint32_t rpm)
+{
+    if (!homed_ && cfg_->has_home) return Error::NOT_HOMED;
+    int32_t delta = target - position_;
+    if (delta == 0) return Error::OK;
+    return startGo(delta, rpm);
+}
+
+void StepperMotor::abortMove()
+{
+    if (!moving_) return;
+    stepper_ctrl_stop(cfg_->stepper_dev);
+    moving_ = false;
+    cur_dir_ = MotionDir::NONE;
+    pending_steps_ = 0;
+}
+
 StepperMotor::Error StepperMotor::run(uint32_t rpm, MotionDir dir)
 {
     if (alarm_) return Error::IN_FAULT;

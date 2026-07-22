@@ -40,7 +40,7 @@ struct Context {
     component::Sensor *table_home;
 
     // Active recipe
-    const config::Recipe *recipe;
+    config::Recipe *recipe;
 
     // Runtime state
     TestResult last_result;

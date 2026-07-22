@@ -21,12 +21,21 @@ extern void config_apply_saved(void);
 static config::ConfigStore config_store;
 static engine::Engine sfc_engine;
 
+static void scan_work_handler(struct k_work *work);
+K_WORK_DEFINE(scan_work, scan_work_handler);
+
 static void scan_timer_handler(struct k_timer *timer);
 K_TIMER_DEFINE(scan_timer, scan_timer_handler, NULL);
 
 static void scan_timer_handler(struct k_timer *timer)
 {
     ARG_UNUSED(timer);
+    k_work_submit(&scan_work);
+}
+
+static void scan_work_handler(struct k_work *work)
+{
+    ARG_UNUSED(work);
     sfc_engine.scan(machine_context);
 }
 
@@ -65,6 +74,12 @@ int main(void)
             config_apply_saved();
         }
     }
+
+    // Move cylinders to idle positions: stopper=B, rfid=B, locker=A
+    LOG_INF("Cylinders to idle positions...");
+    if (machine_context.stopper) machine_context.stopper->goTo(component::CylPosition::POS_B);
+    if (machine_context.rfid) machine_context.rfid->goTo(component::CylPosition::POS_B);
+    if (machine_context.locker) machine_context.locker->goTo(component::CylPosition::POS_A);
 
     // Auto-home table (after settings are applied)
     if (machine_context.table && machine_context.table->config().auto_home) {

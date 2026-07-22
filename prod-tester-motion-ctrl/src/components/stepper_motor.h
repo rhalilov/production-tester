@@ -81,6 +81,11 @@ public:
     Error go(int32_t steps, uint32_t rpm);
     Error goTo(int32_t position, uint32_t rpm);
 
+    // Non-blocking move initiation (pair with waitDone() or poll isMoving())
+    Error startGo(int32_t steps, uint32_t rpm);
+    Error startGoTo(int32_t position, uint32_t rpm);
+    void abortMove();
+
     // Non-blocking continuous run
     Error run(uint32_t rpm, MotionDir dir);
     void stop();
@@ -109,6 +114,15 @@ public:
     void onMoveComplete();
 
     const StepperMotorConfig &config() const { return *cfg_; }
+
+    int32_t mmToSteps(float mm) const {
+        if (!cfg_ || cfg_->mm_per_rev <= 0.0f) return 0;
+        return (int32_t)(mm * cfg_->steps_per_rev / cfg_->mm_per_rev);
+    }
+    float stepsToMm(int32_t steps) const {
+        if (!cfg_ || cfg_->mm_per_rev <= 0.0f) return 0.0f;
+        return (float)steps * cfg_->mm_per_rev / cfg_->steps_per_rev;
+    }
 
     void setSoftLimits(int32_t min, int32_t max) {
         auto *c = const_cast<StepperMotorConfig *>(cfg_);

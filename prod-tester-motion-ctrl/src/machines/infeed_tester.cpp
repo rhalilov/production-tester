@@ -179,16 +179,16 @@ static SmemaPortConfig smema_cfg = {
 };
 
 // Sensor configs
-static SensorConfig laser1_cfg = { &laser1_spec, "laser1", 50, false };
-static SensorConfig laser2_cfg = { &laser2_spec, "laser2", 50, false };
-static SensorConfig laser3_cfg = { &laser3_spec, "laser3", 50, false };
+static SensorConfig laser1_cfg = { &laser1_spec, "laser1", 50, true };
+static SensorConfig laser2_cfg = { &laser2_spec, "laser2", 50, true };
+static SensorConfig laser3_cfg = { &laser3_spec, "laser3", 50, true };
 static SensorConfig table_home_cfg = { &photo10_spec, "table_home", 0, true };
-static SensorConfig cyl1a_cfg = { &ind6_spec, "cyl1_a", 0, true };
-static SensorConfig cyl1b_cfg = { &ind7_spec, "cyl1_b", 0, true };
-static SensorConfig cyl2a_cfg = { &ind8_spec, "cyl2_a", 0, true };
-static SensorConfig cyl2b_cfg = { &ind9_spec, "cyl2_b", 0, true };
-static SensorConfig cyl3a_cfg = { &ind4_spec, "cyl3_a", 0, true };
-static SensorConfig cyl3b_cfg = { &ind5_spec, "cyl3_b", 0, true };
+static SensorConfig cyl1a_cfg = { &ind6_spec, "ind6", 0, true };
+static SensorConfig cyl1b_cfg = { &ind7_spec, "ind7", 0, true };
+static SensorConfig cyl2a_cfg = { &ind8_spec, "ind8", 0, true };
+static SensorConfig cyl2b_cfg = { &ind9_spec, "ind9", 0, true };
+static SensorConfig cyl3a_cfg = { &ind4_spec, "ind4", 0, true };
+static SensorConfig cyl3b_cfg = { &ind5_spec, "ind5", 0, true };
 
 // --- Component instances ---
 
@@ -218,10 +218,15 @@ static config::Recipe default_recipe = {
         { 10, 0 },                                       // [0] home/up rpm
         { 40, 0 },                                       // [1] convey rpm
         { 10, CONFIG_MOTOR_STEPS_PER_REV / 2 },          // [2] creep rpm + steps
-        { 40, 5 * CONFIG_MOTOR_STEPS_PER_REV },           // [3] table down p1
-        { 10, 1 * CONFIG_MOTOR_STEPS_PER_REV },           // [4] table down p2
+        { 40, 0 },                                      // [3] table fast rpm
+        { 10, 0 },                                      // [4] table slow rpm
         { 40, 0 },                                       // [5] convey out rpm
         { 20, 0 },                                       // [6] eject rpm
+    },
+    .table_pos = {
+        .guides_clear = -10.0f,     // mm — guides out of board
+        .pins_touch   = -25.0f,     // mm — probes just touching
+        .pins_contact = -30.0f,     // mm — full contact (test)
     },
     .cylinder_timeout_ms = CONFIG_CYLINDER_CONFIRM_TIMEOUT_MS,
     .laser_debounce_ms = 50,
@@ -294,7 +299,7 @@ static StepDef infeed_steps[] = {
           ctx.stopper->goTo(CylPosition::POS_A);
       },
       nullptr, nullptr,
-      [](Context &ctx) -> bool { return ctx.cyl1_a->triggered(); },
+      [](Context &ctx) -> bool { return ctx.stopper->currentPos() == CylPosition::POS_A; },
       4, nullptr, 0
     },
 
@@ -308,22 +313,22 @@ static StepDef infeed_steps[] = {
       5, nullptr, 0
     },
 
-    // Step 5: Table down phase 1
-    { "table_down_p1",
+    // Step 5: Table down to pins_touch
+    { "pins_touch",
       [](Context &ctx) {
-          int32_t steps = -(int32_t)ctx.recipe->motor_presets[3].steps;
-          ctx.table->go(steps, ctx.recipe->motor_presets[3].rpm);
+          int32_t target = ctx.table->mmToSteps(ctx.recipe->table_pos.pins_touch);
+          ctx.table->goTo(target, ctx.recipe->motor_presets[3].rpm);
       },
       nullptr, nullptr,
       [](Context &ctx) -> bool { return !ctx.table->isMoving(); },
       6, nullptr, 0
     },
 
-    // Step 6: Table down phase 2
-    { "table_down_p2",
+    // Step 6: Table down to pins_contact
+    { "pins_contact",
       [](Context &ctx) {
-          int32_t steps = -(int32_t)ctx.recipe->motor_presets[4].steps;
-          ctx.table->go(steps, ctx.recipe->motor_presets[4].rpm);
+          int32_t target = ctx.table->mmToSteps(ctx.recipe->table_pos.pins_contact);
+          ctx.table->goTo(target, ctx.recipe->motor_presets[4].rpm);
       },
       nullptr, nullptr,
       [](Context &ctx) -> bool { return !ctx.table->isMoving(); },
@@ -334,7 +339,7 @@ static StepDef infeed_steps[] = {
     { "arm_rfid",
       [](Context &ctx) { ctx.rfid->goTo(CylPosition::POS_A); },
       nullptr, nullptr,
-      [](Context &ctx) -> bool { return ctx.cyl2_a->triggered(); },
+      [](Context &ctx) -> bool { return ctx.rfid->currentPos() == CylPosition::POS_A; },
       8, nullptr, 0
     },
 
@@ -342,7 +347,7 @@ static StepDef infeed_steps[] = {
     { "arm_locker",
       [](Context &ctx) { ctx.locker->goTo(CylPosition::POS_B); },
       nullptr, nullptr,
-      [](Context &ctx) -> bool { return ctx.cyl3_b->triggered(); },
+      [](Context &ctx) -> bool { return ctx.locker->currentPos() == CylPosition::POS_B; },
       9, nullptr, 0
     },
 
@@ -372,7 +377,7 @@ static StepDef infeed_steps[] = {
     { "release_rfid",
       [](Context &ctx) { ctx.rfid->goTo(CylPosition::POS_B); },
       nullptr, nullptr,
-      [](Context &ctx) -> bool { return ctx.cyl2_b->triggered(); },
+      [](Context &ctx) -> bool { return ctx.rfid->currentPos() == CylPosition::POS_B; },
       12, nullptr, 0
     },
 
@@ -380,7 +385,7 @@ static StepDef infeed_steps[] = {
     { "release_locker",
       [](Context &ctx) { ctx.locker->goTo(CylPosition::POS_A); },
       nullptr, nullptr,
-      [](Context &ctx) -> bool { return ctx.cyl3_a->triggered(); },
+      [](Context &ctx) -> bool { return ctx.locker->currentPos() == CylPosition::POS_A; },
       13, nullptr, 0
     },
 
@@ -388,7 +393,7 @@ static StepDef infeed_steps[] = {
     { "disarm_stopper",
       [](Context &ctx) { ctx.stopper->goTo(CylPosition::POS_B); },
       nullptr, nullptr,
-      [](Context &ctx) -> bool { return ctx.cyl1_b->triggered(); },
+      [](Context &ctx) -> bool { return ctx.stopper->currentPos() == CylPosition::POS_B; },
       14, nullptr, 0
     },
 
