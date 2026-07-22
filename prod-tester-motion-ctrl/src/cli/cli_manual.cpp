@@ -55,11 +55,34 @@ static int cmd_motor(const struct shell *sh, size_t argc, char **argv)
     }
 
     if (argc < 3) {
-        shell_print(sh, "usage: manual motor <1-3> <run|stop|go|home> [args]");
+        shell_print(sh, "usage: manual motor <1-3|all> <run|stop|go|go_mm|home|on|off> [args]");
+        shell_print(sh, "  on/off               — enable/disable driver");
         shell_print(sh, "  run <rpm> <fwd|rev>  — continuous");
         shell_print(sh, "  stop                 — stop motor");
         shell_print(sh, "  go <steps> <rpm>     — relative move");
+        shell_print(sh, "  go_mm <mm> <rpm>     — relative move in mm");
         shell_print(sh, "  home                 — run homing");
+        return -EINVAL;
+    }
+
+    // Handle "all" for enable/disable
+    if (strcmp(argv[1], "all") == 0) {
+        auto *ctx = app::context();
+        if (argc >= 3 && strcmp(argv[2], "on") == 0) {
+            ctx->conveyor->setEnabled(true);
+            ctx->width->setEnabled(true);
+            ctx->table->setEnabled(true);
+            shell_print(sh, "All motors enabled");
+            return 0;
+        }
+        if (argc >= 3 && strcmp(argv[2], "off") == 0) {
+            ctx->conveyor->setEnabled(false);
+            ctx->width->setEnabled(false);
+            ctx->table->setEnabled(false);
+            shell_print(sh, "All motors disabled");
+            return 0;
+        }
+        shell_error(sh, "usage: manual motor all <on|off>");
         return -EINVAL;
     }
 
@@ -67,6 +90,21 @@ static int cmd_motor(const struct shell *sh, size_t argc, char **argv)
     if (!motor) return -EINVAL;
 
     const char *cmd = argv[2];
+
+    if (strcmp(cmd, "on") == 0) {
+        motor->setEnabled(true);
+        shell_print(sh, "Motor %s enabled", argv[1]);
+        return 0;
+    }
+
+    if (strcmp(cmd, "off") == 0) {
+        motor->setEnabled(false);
+        shell_print(sh, "Motor %s disabled", argv[1]);
+        return 0;
+    }
+
+    // Auto-enable motor on any move command
+    motor->setEnabled(true);
 
     if (strcmp(cmd, "stop") == 0) {
         motor->stop();
@@ -115,6 +153,31 @@ static int cmd_motor(const struct shell *sh, size_t argc, char **argv)
             return -EIO;
         }
         shell_print(sh, "OK — position=%d", motor->position());
+        return 0;
+    }
+
+    if (strcmp(cmd, "go_mm") == 0) {
+        if (argc < 5) {
+            shell_error(sh, "usage: manual motor %s go_mm <mm> <rpm>", argv[1]);
+            return -EINVAL;
+        }
+        float mm_per_rev = motor->config().mm_per_rev;
+        if (mm_per_rev <= 0) {
+            shell_error(sh, "Motor %s has no mm_per_rev configured", argv[1]);
+            return -EINVAL;
+        }
+        float mm = strtof(argv[3], nullptr);
+        int32_t steps = (int32_t)(mm * (float)motor->config().steps_per_rev / mm_per_rev);
+        uint32_t rpm = atoi(argv[4]);
+        shell_print(sh, "Motor %s go %.2f mm (%d steps) @ %u rpm...",
+                    argv[1], (double)mm, steps, rpm);
+        auto err = motor->go(steps, rpm);
+        if (err != StepperMotor::Error::OK) {
+            shell_error(sh, "go failed: %d", (int)err);
+            return -EIO;
+        }
+        float pos_mm = (float)motor->position() * mm_per_rev / (float)motor->config().steps_per_rev;
+        shell_print(sh, "OK — position=%d (%.2f mm)", motor->position(), (double)pos_mm);
         return 0;
     }
 

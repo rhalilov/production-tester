@@ -1,4 +1,5 @@
 #include "stepper_motor.h"
+#include "../app.h"
 
 #include <errno.h>
 #include <zephyr/kernel.h>
@@ -125,49 +126,94 @@ int StepperMotor::home()
         return static_cast<int>(Error::IN_FAULT);
     }
 
+    auto home_phys_dir = (physicalDir(cfg_->home_dir) > 0)
+                             ? STEPPER_CTRL_DIRECTION_POSITIVE
+                             : STEPPER_CTRL_DIRECTION_NEGATIVE;
+    auto away_phys_dir = (physicalDir(cfg_->home_dir) > 0)
+                             ? STEPPER_CTRL_DIRECTION_NEGATIVE
+                             : STEPPER_CTRL_DIRECTION_POSITIVE;
+
+    int err;
+
+    // Phase 1: if already on sensor, back off first
     if (gpio_pin_get_dt(cfg_->home_sensor)) {
-        position_ = 0;
-        homed_ = true;
-        LOG_INF("already at home");
-        return 0;
+        LOG_INF("home: already on sensor, backing off...");
+        err = stepper_ctrl_set_microstep_interval(cfg_->stepper_dev,
+                                                   computeInterval(cfg_->home_rpm / 2));
+        if (err) return err;
+
+        moving_ = true;
+        err = stepper_ctrl_run(cfg_->stepper_dev, away_phys_dir);
+        if (err) { moving_ = false; return err; }
+
+        while (gpio_pin_get_dt(cfg_->home_sensor)) {
+            if (alarm_) { stepper_ctrl_stop(cfg_->stepper_dev); moving_ = false; return static_cast<int>(Error::IN_FAULT); }
+            k_msleep(1);
+        }
+        stepper_ctrl_stop(cfg_->stepper_dev);
+        moving_ = false;
+        k_msleep(50);
     }
 
-    int err = stepper_ctrl_set_microstep_interval(cfg_->stepper_dev, computeInterval(cfg_->home_rpm));
-    if (err) {
-        return err;
-    }
-
-    auto dir = (physicalDir(cfg_->home_dir) > 0)
-                   ? STEPPER_CTRL_DIRECTION_POSITIVE
-                   : STEPPER_CTRL_DIRECTION_NEGATIVE;
+    // Phase 2: approach sensor at home speed
+    LOG_INF("home: approaching sensor...");
+    err = stepper_ctrl_set_microstep_interval(cfg_->stepper_dev, computeInterval(cfg_->home_rpm));
+    if (err) return err;
 
     moving_ = true;
     cur_dir_ = cfg_->home_dir;
 
-    err = stepper_ctrl_run(cfg_->stepper_dev, dir);
-    if (err) {
-        moving_ = false;
-        cur_dir_ = MotionDir::NONE;
-        return err;
-    }
+    err = stepper_ctrl_run(cfg_->stepper_dev, home_phys_dir);
+    if (err) { moving_ = false; cur_dir_ = MotionDir::NONE; return err; }
 
     while (!gpio_pin_get_dt(cfg_->home_sensor)) {
-        if (alarm_) {
-            stepper_ctrl_stop(cfg_->stepper_dev);
-            moving_ = false;
-            cur_dir_ = MotionDir::NONE;
-            return static_cast<int>(Error::IN_FAULT);
-        }
+        if (alarm_) { stepper_ctrl_stop(cfg_->stepper_dev); moving_ = false; cur_dir_ = MotionDir::NONE; return static_cast<int>(Error::IN_FAULT); }
         k_msleep(1);
     }
+    stepper_ctrl_stop(cfg_->stepper_dev);
+    moving_ = false;
+    k_msleep(50);
 
+    // Phase 3: overshoot into sensor a bit more (1/4 rev)
+    LOG_INF("home: overdriving into sensor...");
+    int32_t overshoot = (int32_t)(cfg_->steps_per_rev / 4);
+    pending_steps_ = 0;
+    err = stepper_ctrl_set_microstep_interval(cfg_->stepper_dev, computeInterval(cfg_->home_rpm / 2));
+    if (err) return err;
+
+    k_sem_reset(&done_sem_);
+    pending_steps_ = overshoot;
+    moving_ = true;
+
+    err = stepper_ctrl_move_by(cfg_->stepper_dev,
+             (home_phys_dir == STEPPER_CTRL_DIRECTION_POSITIVE) ? overshoot : -overshoot);
+    if (err) { moving_ = false; pending_steps_ = 0; return err; }
+
+    k_sem_take(&done_sem_, K_MSEC(5000));
+    moving_ = false;
+    pending_steps_ = 0;
+    k_msleep(100);
+
+    // Phase 4: back off slowly until sensor opens = home position
+    LOG_INF("home: backing off to edge...");
+    err = stepper_ctrl_set_microstep_interval(cfg_->stepper_dev, computeInterval(cfg_->home_rpm / 3));
+    if (err) return err;
+
+    moving_ = true;
+    err = stepper_ctrl_run(cfg_->stepper_dev, away_phys_dir);
+    if (err) { moving_ = false; return err; }
+
+    while (gpio_pin_get_dt(cfg_->home_sensor)) {
+        if (alarm_) { stepper_ctrl_stop(cfg_->stepper_dev); moving_ = false; return static_cast<int>(Error::IN_FAULT); }
+        k_msleep(1);
+    }
     stepper_ctrl_stop(cfg_->stepper_dev);
     moving_ = false;
     cur_dir_ = MotionDir::NONE;
     position_ = 0;
     homed_ = true;
 
-    LOG_INF("homed OK");
+    LOG_INF("homed OK (falling edge)");
     return 0;
 }
 
@@ -177,7 +223,7 @@ StepperMotor::Error StepperMotor::go(int32_t steps, uint32_t rpm)
     if (moving_) return Error::BUSY;
     if (rpm == 0) return Error::NOT_READY;
 
-    if (cfg_->has_limits && homed_) {
+    if (cfg_->has_limits && homed_ && !app::isFactory()) {
         int32_t target = position_ + steps;
         if (!checkLimits(target)) {
             LOG_WRN("soft limit: pos=%d target=%d min=%d max=%d",

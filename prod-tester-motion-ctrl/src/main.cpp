@@ -8,6 +8,7 @@
 #include "config/config_store.h"
 
 #include <zephyr/kernel.h>
+#include <zephyr/settings/settings.h>
 #include <zephyr/logging/log.h>
 
 LOG_MODULE_REGISTER(main, LOG_LEVEL_INF);
@@ -15,6 +16,7 @@ LOG_MODULE_REGISTER(main, LOG_LEVEL_INF);
 extern engine::EngineConfig machine_engine_config;
 extern engine::Context machine_context;
 extern int machine_init(void);
+extern void config_apply_saved(void);
 
 static config::ConfigStore config_store;
 static engine::Engine sfc_engine;
@@ -50,6 +52,30 @@ int main(void)
     }
 
     app::init(&sfc_engine, &machine_context, &scan_timer);
+
+    // Load and apply saved motor parameters from flash
+    err = settings_subsys_init();
+    if (err) {
+        LOG_WRN("settings init: %d", err);
+    } else {
+        err = settings_load();
+        if (err) {
+            LOG_WRN("settings load: %d", err);
+        } else {
+            config_apply_saved();
+        }
+    }
+
+    // Auto-home table (after settings are applied)
+    if (machine_context.table && machine_context.table->config().auto_home) {
+        LOG_INF("Auto-homing table with home_rpm=%u...",
+                machine_context.table->config().home_rpm);
+        machine_context.table->setEnabled(true);
+        err = machine_context.table->home();
+        if (err) {
+            LOG_ERR("table home failed: %d", err);
+        }
+    }
 
     LOG_INF("System ready. Type 'mc start' to begin.");
     return 0;

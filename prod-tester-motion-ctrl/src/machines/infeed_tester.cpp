@@ -90,9 +90,10 @@ static StepperMotorConfig conveyor_cfg = {
     .soft_limit_max = 0,
     .safe_position = 0,
     .persist_position = false,
-    .invert_dir = true,    // conveyor direction inverted per HW
+    .invert_dir = false,    // conveyor direction
     .accel = { .start_rpm = 5, .accel_rpm_s = 100 },
     .steps_per_rev = CONFIG_MOTOR_STEPS_PER_REV,
+    .mm_per_rev = 0,    // conveyor: no linear axis
 };
 
 static StepperMotorConfig width_cfg = {
@@ -117,6 +118,7 @@ static StepperMotorConfig width_cfg = {
     .invert_dir = false,
     .accel = { .start_rpm = 5, .accel_rpm_s = 80 },
     .steps_per_rev = CONFIG_MOTOR_STEPS_PER_REV,
+    .mm_per_rev = 4.0f,    // width: 4mm per revolution
 };
 
 static StepperMotorConfig table_cfg = {
@@ -141,29 +143,30 @@ static StepperMotorConfig table_cfg = {
     .invert_dir = false,
     .accel = { .start_rpm = 5, .accel_rpm_s = 120 },
     .steps_per_rev = CONFIG_MOTOR_STEPS_PER_REV,
+    .mm_per_rev = 5.0f,    // table: 5mm per revolution
 };
 
 static CylinderConfig stopper_cfg = {
     .coil_a = &sol1a_spec,
     .coil_b = &sol1b_spec,
-    .sensor_a = &ind6_spec,   // cyl1 pos A confirm (stopper up)
-    .sensor_b = &ind7_spec,   // cyl1 pos B confirm (stopper down)
+    .sensor_a = &ind6_spec,
+    .sensor_b = &ind7_spec,
     .timeout_ms = CONFIG_CYLINDER_CONFIRM_TIMEOUT_MS,
 };
 
 static CylinderConfig rfid_cfg = {
     .coil_a = &sol2a_spec,
     .coil_b = &sol2b_spec,
-    .sensor_a = &ind8_spec,   // cyl2 pos A confirm
-    .sensor_b = &ind9_spec,   // cyl2 pos B confirm
+    .sensor_a = &ind8_spec,
+    .sensor_b = &ind9_spec,
     .timeout_ms = CONFIG_CYLINDER_CONFIRM_TIMEOUT_MS,
 };
 
 static CylinderConfig locker_cfg = {
     .coil_a = &sol3a_spec,
     .coil_b = &sol3b_spec,
-    .sensor_a = &ind4_spec,   // cyl3 pos A confirm
-    .sensor_b = &ind5_spec,   // cyl3 pos B confirm
+    .sensor_a = &ind4_spec,
+    .sensor_b = &ind5_spec,
     .timeout_ms = CONFIG_CYLINDER_CONFIRM_TIMEOUT_MS,
 };
 
@@ -519,14 +522,8 @@ int machine_init(void)
     motor_width.setEnabled(true);
     motor_table.setEnabled(true);
 
-    // Auto-home table at boot
-    if (table_cfg.auto_home) {
-        LOG_INF("Auto-homing table...");
-        err = motor_table.home();
-        if (err) {
-            LOG_ERR("table home failed: %d", err);
-        }
-    }
+    // Auto-home table at boot (moved to main.cpp after settings load)
+    // if (table_cfg.auto_home) { ... }
 
     LOG_INF("Infeed tester machine init complete (%d steps)", INFEED_STEP_COUNT);
     return 0;
