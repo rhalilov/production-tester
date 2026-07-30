@@ -59,15 +59,15 @@ static Cylinder *get_cylinder(const struct shell *sh, const char *arg)
     auto *ctx = app::context();
     if (!ctx) return nullptr;
 
-    int n = atoi(arg);
-    switch (n) {
-    case 1: return ctx->stopper;
-    case 2: return ctx->rfid;
-    case 3: return ctx->locker;
-    default:
-        shell_error(sh, "Cylinder %d not found (1-3)", n);
-        return nullptr;
+    Cylinder *cyls[] = { ctx->stopper, ctx->rfid, ctx->locker };
+    for (int i = 0; i < 3; i++) {
+        if (strcmp(arg, cyls[i]->config().name) == 0) return cyls[i];
     }
+    int n = atoi(arg);
+    if (n >= 1 && n <= 3) return cyls[n - 1];
+    shell_error(sh, "Unknown cylinder: %s (%s|%s|%s|1-3)", arg,
+                cyls[0]->config().name, cyls[1]->config().name, cyls[2]->config().name);
+    return nullptr;
 }
 
 static int cmd_motor(const struct shell *sh, size_t argc, char **argv)
@@ -230,7 +230,7 @@ static int cmd_cylinder(const struct shell *sh, size_t argc, char **argv)
     }
 
     if (argc < 3) {
-        shell_print(sh, "usage: manual cylinder <1-3> <a|b|off>");
+        shell_print(sh, "usage: manual cylinder <name|1-3> <a|b|off>");
         return -EINVAL;
     }
 

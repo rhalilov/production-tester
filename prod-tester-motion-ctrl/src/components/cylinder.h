@@ -1,6 +1,7 @@
 #pragma once
 
 #include <stdint.h>
+#include <string.h>
 #include <zephyr/drivers/gpio.h>
 
 namespace component {
@@ -8,7 +9,7 @@ namespace component {
 enum class CylPosition : uint8_t { POS_A, POS_B, UNKNOWN };
 
 struct CylinderConfig {
-    const char *name;
+    char name[16];
     const gpio_dt_spec *coil_a;
     const gpio_dt_spec *coil_b;
     const gpio_dt_spec *sensor_a;
@@ -47,6 +48,12 @@ public:
     }
     void setSensorB(const gpio_dt_spec *pin) {
         if (cfg_) const_cast<CylinderConfig *>(cfg_)->sensor_b = pin;
+    }
+    void setName(const char *n) {
+        if (cfg_) {
+            strncpy(const_cast<CylinderConfig *>(cfg_)->name, n, sizeof(cfg_->name) - 1);
+            const_cast<CylinderConfig *>(cfg_)->name[sizeof(cfg_->name) - 1] = '\0';
+        }
     }
 
     const CylinderConfig &config() const { return *cfg_; }

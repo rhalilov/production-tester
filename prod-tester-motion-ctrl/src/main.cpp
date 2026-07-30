@@ -8,6 +8,7 @@
 #include "config/config_store.h"
 
 #include <zephyr/kernel.h>
+#include <zephyr/drivers/gpio.h>
 #include <zephyr/settings/settings.h>
 #include <zephyr/logging/log.h>
 
@@ -43,6 +44,11 @@ static void scan_work_handler(struct k_work *work)
 
 int main(void)
 {
+    /* Keep USB OTG power switch U6 off (PC0 HIGH = VBUS disabled) */
+    static const struct gpio_dt_spec usb_pwr =
+        GPIO_DT_SPEC_GET(DT_NODELABEL(usb_pwr), gpios);
+    gpio_pin_configure_dt(&usb_pwr, GPIO_OUTPUT_INACTIVE);
+
     LOG_INF("prod-tester-motion-ctrl v0.1.0 starting");
 
     int err = config_store.init();

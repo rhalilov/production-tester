@@ -110,6 +110,7 @@ struct IoConfig {
     uint8_t cyl_sensor_a[3];     // stopper, rfid, locker: index 0..5 = ind4..ind9
     uint8_t cyl_sensor_b[3];
     uint8_t cyl_idle_pos[3];     // 0=POS_A, 1=POS_B (stopper, rfid, locker)
+    char cyl_name[3][16];        // configurable cylinder names
 };
 
 static IoConfig saved_io_cfg;
@@ -129,6 +130,10 @@ static int io_cfg_set(const char *name, size_t len,
             saved_io_cfg.cyl_idle_pos[1] = 1;
             saved_io_cfg.cyl_idle_pos[2] = 0;
         }
+        // Default names if not stored
+        if (saved_io_cfg.cyl_name[0][0] == '\0') strncpy(saved_io_cfg.cyl_name[0], "stopper", 15);
+        if (saved_io_cfg.cyl_name[1][0] == '\0') strncpy(saved_io_cfg.cyl_name[1], "rfid", 15);
+        if (saved_io_cfg.cyl_name[2][0] == '\0') strncpy(saved_io_cfg.cyl_name[2], "locker", 15);
         io_cfg_loaded = true;
         LOG_INF("loaded IO config from flash");
         return 0;
@@ -182,6 +187,7 @@ void config_apply_saved(void)
             uint8_t ib = saved_io_cfg.cyl_sensor_b[i];
             if (ia < 6) cyls[i]->setSensorA(inds[ia]->config().pin);
             if (ib < 6) cyls[i]->setSensorB(inds[ib]->config().pin);
+            cyls[i]->setName(saved_io_cfg.cyl_name[i]);
         }
         LOG_INF("applied saved IO config (sensors + cylinder mapping)");
     }
@@ -440,6 +446,11 @@ static int cmd_save(const struct shell *sh, size_t argc, char **argv)
         for (int i = 0; i < 3; i++) {
             io.cyl_idle_pos[i] = saved_io_cfg.cyl_idle_pos[i];
         }
+        // Store cylinder names
+        for (int i = 0; i < 3; i++) {
+            strncpy(io.cyl_name[i], saved_io_cfg.cyl_name[i], 15);
+            io.cyl_name[i][15] = '\0';
+        }
         int rc = settings_save_one("iocfg/io", &io, sizeof(io));
         if (rc) {
             shell_error(sh, "Failed to save IO config: %d", rc);
@@ -655,9 +666,13 @@ static int cmd_sensor(const struct shell *sh, size_t argc, char **argv)
 
 static component::Cylinder *cylinder_by_name(const char *name, engine::Context *ctx)
 {
-    if (strcmp(name, "stopper") == 0 || strcmp(name, "1") == 0) return ctx->stopper;
-    if (strcmp(name, "rfid") == 0 || strcmp(name, "2") == 0) return ctx->rfid;
-    if (strcmp(name, "locker") == 0 || strcmp(name, "3") == 0) return ctx->locker;
+    component::Cylinder *cyls[] = { ctx->stopper, ctx->rfid, ctx->locker };
+    for (int i = 0; i < 3; i++) {
+        if (strcmp(name, cyls[i]->config().name) == 0) return cyls[i];
+    }
+    if (strcmp(name, "1") == 0) return ctx->stopper;
+    if (strcmp(name, "2") == 0) return ctx->rfid;
+    if (strcmp(name, "3") == 0) return ctx->locker;
     return nullptr;
 }
 
@@ -670,7 +685,9 @@ static int cmd_cylinder_cfg(const struct shell *sh, size_t argc, char **argv)
         shell_print(sh, "usage: cfg cylinder fire <name> <a|b|off>  — fire single coil");
         shell_print(sh, "       cfg cylinder read                   — read all sensors");
         shell_print(sh, "       cfg cylinder map <name> <a|b> <indX> — assign sensor");
-        shell_print(sh, "  names: stopper|1, rfid|2, locker|3");
+        shell_print(sh, "       cfg cylinder name <1-3> <new_name>  — rename cylinder");
+        shell_print(sh, "  names: %s|1, %s|2, %s|3",
+                    ctx->stopper->config().name, ctx->rfid->config().name, ctx->locker->config().name);
         shell_print(sh, "  sensors: ind4, ind5, ind6, ind7, ind8, ind9");
         return -EINVAL;
     }
@@ -783,7 +800,25 @@ static int cmd_cylinder_cfg(const struct shell *sh, size_t argc, char **argv)
         return 0;
     }
 
-    shell_error(sh, "Unknown: %s (fire|read|map)", argv[1]);
+    if (strcmp(argv[1], "name") == 0) {
+        if (argc < 4) {
+            shell_error(sh, "usage: cfg cylinder name <1-3> <new_name>");
+            return -EINVAL;
+        }
+        int idx = atoi(argv[2]);
+        if (idx < 1 || idx > 3) {
+            shell_error(sh, "Cylinder index 1-3 required");
+            return -EINVAL;
+        }
+        component::Cylinder *cyls[] = { ctx->stopper, ctx->rfid, ctx->locker };
+        cyls[idx - 1]->setName(argv[3]);
+        strncpy(saved_io_cfg.cyl_name[idx - 1], argv[3], 15);
+        saved_io_cfg.cyl_name[idx - 1][15] = '\0';
+        shell_print(sh, "Cylinder %d renamed to '%s'. Run 'cfg save' to persist.", idx, argv[3]);
+        return 0;
+    }
+
+    shell_error(sh, "Unknown: %s (fire|read|map|name)", argv[1]);
     return -EINVAL;
 }
 
@@ -846,6 +881,8 @@ static void blob_snapshot(ConfigBlob *blob, engine::Context *ctx)
 
     for (int i = 0; i < 3; i++) {
         blob->io.cyl_idle_pos[i] = saved_io_cfg.cyl_idle_pos[i];
+        strncpy(blob->io.cyl_name[i], saved_io_cfg.cyl_name[i], 15);
+        blob->io.cyl_name[i][15] = '\0';
     }
 
     blob->crc = crc32_ieee((const uint8_t *)blob,
@@ -952,6 +989,9 @@ static int cmd_dump(const struct shell *sh, size_t argc, char **argv)
     shell_print(sh, "cyl.stopper_idle=%c", blob.io.cyl_idle_pos[0] ? 'b' : 'a');
     shell_print(sh, "cyl.rfid_idle=%c", blob.io.cyl_idle_pos[1] ? 'b' : 'a');
     shell_print(sh, "cyl.locker_idle=%c", blob.io.cyl_idle_pos[2] ? 'b' : 'a');
+    shell_print(sh, "cyl.stopper_name=%s", blob.io.cyl_name[0]);
+    shell_print(sh, "cyl.rfid_name=%s", blob.io.cyl_name[1]);
+    shell_print(sh, "cyl.locker_name=%s", blob.io.cyl_name[2]);
     shell_print(sh, "#END");
     return 0;
 }
@@ -1032,6 +1072,23 @@ static int parse_config_line(const char *line, engine::Context *ctx)
         }
         if (strcmp(field, "locker_idle") == 0) {
             saved_io_cfg.cyl_idle_pos[2] = (val[0] == 'b' || val[0] == 'B' || val[0] == '1') ? 1 : 0;
+            return 0;
+        }
+
+        // Handle names: cyl.stopper_name, cyl.rfid_name, cyl.locker_name
+        if (strcmp(field, "stopper_name") == 0) {
+            strncpy(saved_io_cfg.cyl_name[0], val, 15); saved_io_cfg.cyl_name[0][15] = '\0';
+            ctx->stopper->setName(val);
+            return 0;
+        }
+        if (strcmp(field, "rfid_name") == 0) {
+            strncpy(saved_io_cfg.cyl_name[1], val, 15); saved_io_cfg.cyl_name[1][15] = '\0';
+            ctx->rfid->setName(val);
+            return 0;
+        }
+        if (strcmp(field, "locker_name") == 0) {
+            strncpy(saved_io_cfg.cyl_name[2], val, 15); saved_io_cfg.cyl_name[2][15] = '\0';
+            ctx->locker->setName(val);
             return 0;
         }
 
@@ -1213,7 +1270,7 @@ SHELL_STATIC_SUBCMD_SET_CREATE(config_cmds,
     SHELL_CMD(flash, NULL, "Write config blob to flash partition", cmd_flash_blob),
     SHELL_CMD(limit, NULL, "Soft limits per motor", cmd_limit),
     SHELL_CMD(sensor, NULL, "Sensor polarity: cfg sensor <name> <0|1>", cmd_sensor),
-    SHELL_CMD(cylinder, NULL, "Cylinder: cfg cylinder fire|read|map", cmd_cylinder_cfg),
+    SHELL_CMD(cylinder, NULL, "Cylinder: cfg cylinder fire|read|map|name", cmd_cylinder_cfg),
     SHELL_CMD(unlock, NULL, "Unlock access: cfg unlock <operator|proc_eng|factory>", cmd_unlock),
     SHELL_CMD(lock, NULL, "Lock to operator level", cmd_lock),
     SHELL_SUBCMD_SET_END

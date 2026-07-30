@@ -24,6 +24,17 @@
 &can1   { status = "disabled"; };
 &can2   { status = "disabled"; };
 
+/* ---- USB OTG power switch U6: keep VBUS off (device mode) ----------- */
+/ {
+	usb_pwr_off {
+		compatible = "gpio-leds";
+		usb_pwr: usb_pwr {
+			gpios = <&gpioc 0 GPIO_ACTIVE_LOW>;
+			label = "USB_PWR_OFF";
+		};
+	};
+};
+
 /* ---- Clock: HSI self-clocked (mini-USB = debug only) ------------------ */
 &clk_hsi { status = "okay"; };
 &pll {
