@@ -1,4 +1,6 @@
 #include "engine.h"
+#include "context.h"
+#include "trace.h"
 
 #include <zephyr/kernel.h>
 #include <zephyr/logging/log.h>
@@ -46,10 +48,12 @@ const StepDef *Engine::currentStep() const
 void Engine::enterStep(Context &ctx, int index)
 {
     if (index < 0 || index >= cfg_->step_count) {
-        // Sequence complete — loop back to start
         index = 0;
         cycle_count_++;
-        LOG_INF("Cycle #%u complete", cycle_count_);
+        TRACE_DONE("cycle #%u complete", cycle_count_);
+    } else if (ctx.wait_desc) {
+        uint32_t elapsed = (uint32_t)(k_uptime_get() - ctx.wait_start_ms);
+        TRACE_DONE("%s (%ums)", ctx.wait_desc, elapsed);
     }
 
     const StepDef *prev = currentStep();
@@ -60,11 +64,13 @@ void Engine::enterStep(Context &ctx, int index)
     current_step_ = index;
     const StepDef *step = &cfg_->steps[current_step_];
 
-    LOG_INF("-> step[%d] \"%s\"", current_step_, step->name ? step->name : "?");
+    TRACE_STEP(step->name ? step->name : "?");
 
+    ctx.wait_desc = nullptr;
     if (step->on_entry) {
         step->on_entry(ctx);
     }
+    ctx.wait_start_ms = (uint32_t)k_uptime_get();
 }
 
 int Engine::resolveNext()

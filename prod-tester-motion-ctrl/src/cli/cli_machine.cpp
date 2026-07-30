@@ -1,6 +1,7 @@
 #include "app.h"
 #include "engine/engine.h"
 #include "engine/context.h"
+#include "engine/trace.h"
 #include "components/stepper_motor.h"
 #include "components/cylinder.h"
 #include "components/sensor.h"
@@ -389,6 +390,40 @@ static int cmd_home(const struct shell *sh, size_t argc, char **argv)
     shell_print(sh, "OK — table homed (position=0)");
     return 0;
 }
+
+static int cmd_test_done(const struct shell *sh, size_t argc, char **argv)
+{
+    auto *ctx = app::context();
+    if (!ctx) { shell_error(sh, "not init"); return -EINVAL; }
+
+    if (argc < 2) {
+        shell_print(sh, "usage: test done <ok|ng>");
+        return -EINVAL;
+    }
+
+    if (strcmp(argv[1], "ok") == 0) {
+        ctx->last_result = engine::TestResult::PASS;
+        ctx->test_done = true;
+        TRACE_ACT("test result: PASS");
+        shell_print(sh, "Test result: PASS");
+    } else if (strcmp(argv[1], "ng") == 0) {
+        ctx->last_result = engine::TestResult::FAIL;
+        ctx->test_done = true;
+        TRACE_ACT("test result: FAIL");
+        shell_print(sh, "Test result: FAIL");
+    } else {
+        shell_error(sh, "Unknown result: %s (ok|ng)", argv[1]);
+        return -EINVAL;
+    }
+    return 0;
+}
+
+SHELL_STATIC_SUBCMD_SET_CREATE(test_cmds,
+    SHELL_CMD(done, NULL, "Signal test completion: test done <ok|ng>", cmd_test_done),
+    SHELL_SUBCMD_SET_END
+);
+
+SHELL_CMD_REGISTER(test, &test_cmds, "Tester commands", NULL);
 
 SHELL_STATIC_SUBCMD_SET_CREATE(step_cmds,
     SHELL_CMD(next, NULL, "Advance one step (STEP mode)", cmd_step_next),

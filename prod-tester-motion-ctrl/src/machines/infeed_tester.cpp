@@ -3,6 +3,7 @@
 
 #include "engine/engine.h"
 #include "engine/context.h"
+#include "engine/trace.h"
 #include "engine/step.h"
 #include "components/stepper_motor.h"
 #include "components/cylinder.h"
@@ -218,11 +219,11 @@ static config::Recipe default_recipe = {
     .version = config::Recipe::CURRENT_VERSION,
     .name = "default",
     .motor_presets = {
-        { 10, 0 },                                       // [0] home/up rpm
+        { 10, 0 },                                       // [0] home/up rpm (unused, use motor config)
         { 40, 0 },                                       // [1] convey rpm
         { 10, CONFIG_MOTOR_STEPS_PER_REV / 2 },          // [2] creep rpm + steps
-        { 40, 0 },                                      // [3] table fast rpm
-        { 10, 0 },                                      // [4] table slow rpm
+        { 200, 0 },                                      // [3] table fast rpm
+        { 40, 0 },                                       // [4] table slow rpm
         { 40, 0 },                                       // [5] convey out rpm
         { 20, 0 },                                       // [6] eject rpm
     },
@@ -262,7 +263,10 @@ static void interlock_check(Context &ctx, FaultManager &faults)
 static StepDef infeed_steps[] = {
     // Step 0: Idle — wait for downstream signal to go LOW (board request)
     { "idle",
-      nullptr,
+      [](Context &ctx) {
+          TRACE_WAIT("downstream MR_IN low");
+          ctx.wait_desc = "downstream MR_IN low";
+      },
       nullptr,
       nullptr,
       [](Context &ctx) -> bool {
@@ -274,8 +278,12 @@ static StepDef infeed_steps[] = {
     // Step 1: Request board — signal ready + run conveyor, wait for laser1
     { "request",
       [](Context &ctx) {
+          TRACE_ACT("smema_mr_out=HIGH");
           ctx.smema->setMachineReadyOut(true);
+          TRACE_ACT("conveyor RUN +%urpm", ctx.recipe->motor_presets[1].rpm);
           ctx.conveyor->run(ctx.recipe->motor_presets[1].rpm, MotionDir::POS);
+          TRACE_WAIT("laser1 triggered");
+          ctx.wait_desc = "laser1 triggered";
       },
       nullptr,
       nullptr,
@@ -287,10 +295,15 @@ static StepDef infeed_steps[] = {
 
     // Step 2: Board entering — conveyor keeps running, wait until fully past laser1
     { "wait_panel",
-      nullptr,
+      [](Context &ctx) {
+          TRACE_WAIT("laser1 released");
+          ctx.wait_desc = "laser1 released";
+      },
       nullptr,
       [](Context &ctx) {
+          TRACE_ACT("smema_mr_out=LOW");
           ctx.smema->setMachineReadyOut(false);
+          TRACE_ACT("conveyor STOP");
           ctx.conveyor->stop();
       },
       [](Context &ctx) -> bool { return !ctx.laser1->triggered(); },
@@ -300,10 +313,16 @@ static StepDef infeed_steps[] = {
     // Step 3: Convey to near position (laser2)
     { "convey_in",
       [](Context &ctx) {
+          TRACE_ACT("conveyor RUN +%urpm", ctx.recipe->motor_presets[1].rpm);
           ctx.conveyor->run(ctx.recipe->motor_presets[1].rpm, MotionDir::POS);
+          TRACE_WAIT("laser2 triggered");
+          ctx.wait_desc = "laser2 triggered";
       },
       nullptr,
-      [](Context &ctx) { ctx.conveyor->stop(); },
+      [](Context &ctx) {
+          TRACE_ACT("conveyor STOP");
+          ctx.conveyor->stop();
+      },
       [](Context &ctx) -> bool { return ctx.laser2->triggered(); },
       4, nullptr, 0
     },
@@ -311,7 +330,10 @@ static StepDef infeed_steps[] = {
     // Step 4: Arm stopper
     { "arm_stopper",
       [](Context &ctx) {
+          TRACE_ACT("stopper -> POS_A");
           ctx.stopper->goTo(CylPosition::POS_A);
+          TRACE_WAIT("stopper at POS_A");
+          ctx.wait_desc = "stopper at POS_A";
       },
       nullptr, nullptr,
       [](Context &ctx) -> bool { return ctx.stopper->currentPos() == CylPosition::POS_A; },
@@ -321,7 +343,11 @@ static StepDef infeed_steps[] = {
     // Step 5: Creep into stopper
     { "creep",
       [](Context &ctx) {
+          TRACE_ACT("conveyor GO %d steps @%urpm",
+                    ctx.recipe->motor_presets[2].steps, ctx.recipe->motor_presets[2].rpm);
           ctx.conveyor->go(ctx.recipe->motor_presets[2].steps, ctx.recipe->motor_presets[2].rpm);
+          TRACE_WAIT("conveyor move done");
+          ctx.wait_desc = "conveyor move done";
       },
       nullptr, nullptr,
       [](Context &ctx) -> bool { return !ctx.conveyor->isMoving(); },
@@ -332,7 +358,12 @@ static StepDef infeed_steps[] = {
     { "pins_touch",
       [](Context &ctx) {
           int32_t target = ctx.table->mmToSteps(ctx.recipe->table_pos.pins_touch);
+          TRACE_ACT("table GOTO %.1fmm (%d steps) @%urpm",
+                    (double)ctx.recipe->table_pos.pins_touch, target,
+                    ctx.recipe->motor_presets[3].rpm);
           ctx.table->goTo(target, ctx.recipe->motor_presets[3].rpm);
+          TRACE_WAIT("table move done");
+          ctx.wait_desc = "table move done";
       },
       nullptr, nullptr,
       [](Context &ctx) -> bool { return !ctx.table->isMoving(); },
@@ -343,7 +374,12 @@ static StepDef infeed_steps[] = {
     { "pins_contact",
       [](Context &ctx) {
           int32_t target = ctx.table->mmToSteps(ctx.recipe->table_pos.pins_contact);
+          TRACE_ACT("table GOTO %.1fmm (%d steps) @%urpm",
+                    (double)ctx.recipe->table_pos.pins_contact, target,
+                    ctx.recipe->motor_presets[4].rpm);
           ctx.table->goTo(target, ctx.recipe->motor_presets[4].rpm);
+          TRACE_WAIT("table move done");
+          ctx.wait_desc = "table move done";
       },
       nullptr, nullptr,
       [](Context &ctx) -> bool { return !ctx.table->isMoving(); },
@@ -352,7 +388,12 @@ static StepDef infeed_steps[] = {
 
     // Step 8: Arm RFID
     { "arm_rfid",
-      [](Context &ctx) { ctx.rfid->goTo(CylPosition::POS_A); },
+      [](Context &ctx) {
+          TRACE_ACT("rfid -> POS_A");
+          ctx.rfid->goTo(CylPosition::POS_A);
+          TRACE_WAIT("rfid at POS_A");
+          ctx.wait_desc = "rfid at POS_A";
+      },
       nullptr, nullptr,
       [](Context &ctx) -> bool { return ctx.rfid->currentPos() == CylPosition::POS_A; },
       9, nullptr, 0
@@ -360,19 +401,28 @@ static StepDef infeed_steps[] = {
 
     // Step 9: Arm panel locker
     { "arm_locker",
-      [](Context &ctx) { ctx.locker->goTo(CylPosition::POS_B); },
+      [](Context &ctx) {
+          TRACE_ACT("locker -> POS_B");
+          ctx.locker->goTo(CylPosition::POS_B);
+          TRACE_WAIT("locker at POS_B");
+          ctx.wait_desc = "locker at POS_B";
+      },
       nullptr, nullptr,
       [](Context &ctx) -> bool { return ctx.locker->currentPos() == CylPosition::POS_B; },
       10, nullptr, 0
     },
 
-    // Step 10: Test/Program (wait for tester result)
+    // Step 10: Test/Program — wait for tester command
     { "testing",
-      [](Context &ctx) { ctx.timer.start(10000); },
+      [](Context &ctx) {
+          ctx.test_done = false;
+          ctx.last_result = TestResult::NONE;
+          TRACE_WAIT("test done");
+          ctx.wait_desc = "test done";
+      },
       nullptr, nullptr,
       [](Context &ctx) -> bool {
-          // TODO: wait for tester UART result instead of timer
-          return ctx.timer.expired();
+          return ctx.test_done;
       },
       11, nullptr, 0
     },
@@ -380,17 +430,29 @@ static StepDef infeed_steps[] = {
     // Step 11: Table up to home
     { "table_up",
       [](Context &ctx) {
-          ctx.table->run(ctx.recipe->motor_presets[0].rpm, MotionDir::POS);
+          uint32_t rpm = ctx.table->config().home_rpm;
+          TRACE_ACT("table RUN +%urpm (up to home)", rpm);
+          ctx.table->run(rpm, MotionDir::POS);
+          TRACE_WAIT("table_home triggered");
+          ctx.wait_desc = "table_home triggered";
       },
       nullptr,
-      [](Context &ctx) { ctx.table->stop(); },
+      [](Context &ctx) {
+          TRACE_ACT("table STOP");
+          ctx.table->stop();
+      },
       [](Context &ctx) -> bool { return ctx.table_home->triggered(); },
       12, nullptr, 0
     },
 
     // Step 12: Release RFID
     { "release_rfid",
-      [](Context &ctx) { ctx.rfid->goTo(CylPosition::POS_B); },
+      [](Context &ctx) {
+          TRACE_ACT("rfid -> POS_B");
+          ctx.rfid->goTo(CylPosition::POS_B);
+          TRACE_WAIT("rfid at POS_B");
+          ctx.wait_desc = "rfid at POS_B";
+      },
       nullptr, nullptr,
       [](Context &ctx) -> bool { return ctx.rfid->currentPos() == CylPosition::POS_B; },
       13, nullptr, 0
@@ -398,7 +460,12 @@ static StepDef infeed_steps[] = {
 
     // Step 13: Release locker
     { "release_locker",
-      [](Context &ctx) { ctx.locker->goTo(CylPosition::POS_A); },
+      [](Context &ctx) {
+          TRACE_ACT("locker -> POS_A");
+          ctx.locker->goTo(CylPosition::POS_A);
+          TRACE_WAIT("locker at POS_A");
+          ctx.wait_desc = "locker at POS_A";
+      },
       nullptr, nullptr,
       [](Context &ctx) -> bool { return ctx.locker->currentPos() == CylPosition::POS_A; },
       14, nullptr, 0
@@ -406,7 +473,12 @@ static StepDef infeed_steps[] = {
 
     // Step 14: Disarm stopper
     { "disarm_stopper",
-      [](Context &ctx) { ctx.stopper->goTo(CylPosition::POS_B); },
+      [](Context &ctx) {
+          TRACE_ACT("stopper -> POS_B");
+          ctx.stopper->goTo(CylPosition::POS_B);
+          TRACE_WAIT("stopper at POS_B");
+          ctx.wait_desc = "stopper at POS_B";
+      },
       nullptr, nullptr,
       [](Context &ctx) -> bool { return ctx.stopper->currentPos() == CylPosition::POS_B; },
       15, nullptr, 0
@@ -415,24 +487,42 @@ static StepDef infeed_steps[] = {
     // Step 15: Convey out
     { "convey_out",
       [](Context &ctx) {
+          TRACE_ACT("conveyor RUN +%urpm", ctx.recipe->motor_presets[5].rpm);
           ctx.conveyor->run(ctx.recipe->motor_presets[5].rpm, MotionDir::POS);
+          TRACE_WAIT("laser3 triggered");
+          ctx.wait_desc = "laser3 triggered";
       },
       nullptr,
-      [](Context &ctx) { ctx.conveyor->stop(); },
+      [](Context &ctx) {
+          TRACE_ACT("conveyor STOP");
+          ctx.conveyor->stop();
+      },
       [](Context &ctx) -> bool { return ctx.laser3->triggered(); },
       16, nullptr, 0
     },
 
-    // Step 16: SMEMA handoff downstream
+    // Step 16: SMEMA handoff downstream — wait for downstream to request board
     { "smema_out",
       [](Context &ctx) {
+          TRACE_ACT("conveyor STOPPED at laser3, board ready");
+          TRACE_ACT("smema_ba_out=HIGH");
           ctx.smema->setBoardAvailableOut(true);
+          ctx.smema_seen_low = !ctx.smema->machineReadyIn();
+          TRACE_WAIT("downstream MR_IN request (low->high)");
+          ctx.wait_desc = "downstream MR_IN request";
       },
       nullptr,
       [](Context &ctx) {
+          TRACE_ACT("smema_ba_out=LOW");
           ctx.smema->setBoardAvailableOut(false);
       },
       [](Context &ctx) -> bool {
+          if (!ctx.smema_seen_low) {
+              if (!ctx.smema->machineReadyIn()) {
+                  ctx.smema_seen_low = true;
+              }
+              return false;
+          }
           return ctx.smema->machineReadyIn();
       },
       17, nullptr, 0
@@ -441,12 +531,18 @@ static StepDef infeed_steps[] = {
     // Step 17: Eject — run until laser3 clears
     { "eject",
       [](Context &ctx) {
+          TRACE_ACT("conveyor RUN +%urpm (eject)", ctx.recipe->motor_presets[6].rpm);
           ctx.conveyor->run(ctx.recipe->motor_presets[6].rpm, MotionDir::POS);
+          TRACE_WAIT("laser3 released");
+          ctx.wait_desc = "laser3 released";
       },
       nullptr,
-      [](Context &ctx) { ctx.conveyor->stop(); },
+      [](Context &ctx) {
+          TRACE_ACT("conveyor STOP");
+          ctx.conveyor->stop();
+      },
       [](Context &ctx) -> bool { return !ctx.laser3->triggered(); },
-      -1, nullptr, 0   // -1 = loop back to step 0
+      -1, nullptr, 0
     },
 };
 

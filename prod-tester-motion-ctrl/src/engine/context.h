@@ -49,6 +49,16 @@ struct Context {
     bool advance_requested;
     SoftTimer timer;
 
+    // Trace: elapsed time tracking
+    uint32_t wait_start_ms;
+    const char *wait_desc;
+
+    // Tester handshake
+    volatile bool test_done;
+
+    // SMEMA handoff: must see MR_IN go low before accepting high
+    bool smema_seen_low;
+
     // Flags
     bool smema_enabled;
 };
