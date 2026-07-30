@@ -31,7 +31,8 @@ int Cylinder::init(const CylinderConfig &cfg)
     gpio_pin_configure_dt(cfg_->sensor_a, GPIO_INPUT);
     gpio_pin_configure_dt(cfg_->sensor_b, GPIO_INPUT);
 
-    LOG_INF("cylinder init OK (timeout=%ums)", cfg_->timeout_ms);
+    LOG_INF("%s: init OK (timeout=%ums)",
+            cfg_->name ? cfg_->name : "?", cfg_->timeout_ms);
     return 0;
 }
 
@@ -95,7 +96,8 @@ Cylinder::Error Cylinder::goTo(CylPosition pos)
         }
         if (cfg_->timeout_ms > 0 && waited >= cfg_->timeout_ms) {
             off();
-            LOG_ERR("confirm timeout (%ums)", cfg_->timeout_ms);
+            LOG_ERR("%s: confirm timeout (%ums)",
+                    cfg_->name ? cfg_->name : "?", cfg_->timeout_ms);
             return Error::TIMEOUT;
         }
         k_msleep(POLL_MS);

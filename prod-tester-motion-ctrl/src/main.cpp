@@ -17,6 +17,8 @@ extern engine::EngineConfig machine_engine_config;
 extern engine::Context machine_context;
 extern int machine_init(void);
 extern void config_apply_saved(void);
+extern void config_try_blob_fallback(void);
+extern uint8_t config_cyl_idle_pos(int idx);
 
 static config::ConfigStore config_store;
 static engine::Engine sfc_engine;
@@ -75,11 +77,20 @@ int main(void)
         }
     }
 
-    // Move cylinders to idle positions: stopper=B, rfid=B, locker=A
+    config_try_blob_fallback();
+
+    // Move cylinders to idle positions — reverse of arm order (clear path first)
+    // Order: rfid, locker, stopper (mirrors release sequence: steps 12→13→14)
     LOG_INF("Cylinders to idle positions...");
-    if (machine_context.stopper) machine_context.stopper->goTo(component::CylPosition::POS_B);
-    if (machine_context.rfid) machine_context.rfid->goTo(component::CylPosition::POS_B);
-    if (machine_context.locker) machine_context.locker->goTo(component::CylPosition::POS_A);
+    component::Cylinder *cyls[] = { machine_context.stopper, machine_context.rfid, machine_context.locker };
+    int reset_order[] = { 1, 2, 0 };  // rfid, locker, stopper
+    for (int i = 0; i < 3; i++) {
+        int idx = reset_order[i];
+        if (cyls[idx]) {
+            auto pos = config_cyl_idle_pos(idx) ? component::CylPosition::POS_B : component::CylPosition::POS_A;
+            cyls[idx]->goTo(pos);
+        }
+    }
 
     // Auto-home table (after settings are applied)
     if (machine_context.table && machine_context.table->config().auto_home) {

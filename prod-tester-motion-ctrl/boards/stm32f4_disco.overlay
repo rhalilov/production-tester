@@ -45,6 +45,10 @@
 		compatible = "fixed-partitions";
 		#address-cells = <1>;
 		#size-cells = <1>;
+		config_partition: partition@80000 {
+			label = "config_blob";
+			reg = <0x00080000 0x00020000>;   /* 128K: sector 8 */
+		};
 		storage_partition: partition@a0000 {
 			label = "storage";
 			reg = <0x000a0000 0x00060000>;   /* 384K: sectors 9-11 */

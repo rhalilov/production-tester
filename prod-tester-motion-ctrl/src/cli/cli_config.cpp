@@ -10,6 +10,9 @@
 #include <zephyr/shell/shell.h>
 #include <zephyr/drivers/gpio.h>
 #include <zephyr/settings/settings.h>
+#include <zephyr/drivers/flash.h>
+#include <zephyr/storage/flash_map.h>
+#include <zephyr/sys/crc.h>
 #include <zephyr/logging/log.h>
 
 LOG_MODULE_REGISTER(cli_config, LOG_LEVEL_INF);
@@ -106,6 +109,7 @@ struct IoConfig {
     bool sensor_active_high[10];  // laser1..3, table_home, ind4..ind9
     uint8_t cyl_sensor_a[3];     // stopper, rfid, locker: index 0..5 = ind4..ind9
     uint8_t cyl_sensor_b[3];
+    uint8_t cyl_idle_pos[3];     // 0=POS_A, 1=POS_B (stopper, rfid, locker)
 };
 
 static IoConfig saved_io_cfg;
@@ -116,8 +120,15 @@ static int io_cfg_set(const char *name, size_t len,
 {
     const char *next;
     if (settings_name_steq(name, "io", &next) && !next) {
-        if (len != sizeof(saved_io_cfg)) return -EINVAL;
-        if (read_cb(cb_arg, &saved_io_cfg, sizeof(saved_io_cfg)) < 0) return -EINVAL;
+        memset(&saved_io_cfg, 0, sizeof(saved_io_cfg));
+        size_t read_len = (len < sizeof(saved_io_cfg)) ? len : sizeof(saved_io_cfg);
+        if (read_cb(cb_arg, &saved_io_cfg, read_len) < 0) return -EINVAL;
+        // Default idle: stopper=B, rfid=B, locker=A
+        if (len < sizeof(saved_io_cfg)) {
+            saved_io_cfg.cyl_idle_pos[0] = 1;
+            saved_io_cfg.cyl_idle_pos[1] = 1;
+            saved_io_cfg.cyl_idle_pos[2] = 0;
+        }
         io_cfg_loaded = true;
         LOG_INF("loaded IO config from flash");
         return 0;
@@ -174,6 +185,16 @@ void config_apply_saved(void)
         }
         LOG_INF("applied saved IO config (sensors + cylinder mapping)");
     }
+}
+
+uint8_t config_cyl_idle_pos(int idx)
+{
+    if (!io_cfg_loaded) {
+        // defaults: stopper=B(1), rfid=B(1), locker=A(0)
+        static const uint8_t defaults[] = { 1, 1, 0 };
+        return (idx >= 0 && idx < 3) ? defaults[idx] : 1;
+    }
+    return (idx >= 0 && idx < 3) ? saved_io_cfg.cyl_idle_pos[idx] : 1;
 }
 
 // --- CLI commands ---
@@ -415,6 +436,10 @@ static int cmd_save(const struct shell *sh, size_t argc, char **argv)
                     io.cyl_sensor_b[i] = j;
             }
         }
+        // Store idle positions
+        for (int i = 0; i < 3; i++) {
+            io.cyl_idle_pos[i] = saved_io_cfg.cyl_idle_pos[i];
+        }
         int rc = settings_save_one("iocfg/io", &io, sizeof(io));
         if (rc) {
             shell_error(sh, "Failed to save IO config: %d", rc);
@@ -534,6 +559,20 @@ static int cmd_unlock(const struct shell *sh, size_t argc, char **argv)
         app::setAccessLevel(app::AccessLevel::PROC_ENG);
         shell_print(sh, "Access: PROC_ENG (can change speeds, positions, limits)");
     } else if (strcmp(argv[1], "factory") == 0) {
+        // Stop machine before entering factory mode
+        auto *eng = app::engine();
+        auto *ctx = app::context();
+        if (eng && ctx) {
+            app::stopScan();
+            eng->stop();
+            ctx->conveyor->stop();
+            ctx->width->stop();
+            ctx->table->stop();
+            ctx->stopper->off();
+            ctx->rfid->off();
+            ctx->locker->off();
+            shell_print(sh, "Machine stopped.");
+        }
         app::setAccessLevel(app::AccessLevel::FACTORY);
         shell_print(sh, "Access: FACTORY (full access, soft limits DISABLED)");
     } else {
@@ -636,6 +675,31 @@ static int cmd_cylinder_cfg(const struct shell *sh, size_t argc, char **argv)
         return -EINVAL;
     }
 
+    if (strcmp(argv[1], "read") == 0) {
+        static int prev_state[6] = { -1, -1, -1, -1, -1, -1 };
+        component::Sensor *inds[] = {
+            ctx->cyl3_a, ctx->cyl3_b,   // ind4, ind5
+            ctx->cyl1_a, ctx->cyl1_b,   // ind6, ind7
+            ctx->cyl2_a, ctx->cyl2_b,   // ind8, ind9
+        };
+        const char *ind_names[] = { "ind4", "ind5", "ind6", "ind7", "ind8", "ind9" };
+        shell_print(sh, "  %-6s  prev  now", "name");
+        for (int i = 0; i < 6; i++) {
+            int cur = gpio_pin_get_dt(inds[i]->config().pin) != 0 ? 1 : 0;
+            if (prev_state[i] < 0) {
+                shell_print(sh, "  %-6s   -    %d", ind_names[i], cur);
+            } else if (cur != prev_state[i]) {
+                shell_fprintf(sh, SHELL_VT100_COLOR_YELLOW,
+                    "  %-6s   %d    %d  <--\n", ind_names[i], prev_state[i], cur);
+            } else {
+                shell_print(sh, "  %-6s   %d    %d", ind_names[i], prev_state[i], cur);
+            }
+            prev_state[i] = cur;
+        }
+        return 0;
+    }
+
+    // fire and map require factory access
     if (!app::isFactory()) {
         shell_error(sh, "Factory access required. Run 'cfg unlock factory'.");
         return -EACCES;
@@ -669,30 +733,6 @@ static int cmd_cylinder_cfg(const struct shell *sh, size_t argc, char **argv)
         } else {
             shell_error(sh, "Unknown: %s (a|b|off)", argv[3]);
             return -EINVAL;
-        }
-        return 0;
-    }
-
-    if (strcmp(argv[1], "read") == 0) {
-        static int prev_state[6] = { -1, -1, -1, -1, -1, -1 };
-        component::Sensor *inds[] = {
-            ctx->cyl3_a, ctx->cyl3_b,   // ind4, ind5
-            ctx->cyl1_a, ctx->cyl1_b,   // ind6, ind7
-            ctx->cyl2_a, ctx->cyl2_b,   // ind8, ind9
-        };
-        const char *ind_names[] = { "ind4", "ind5", "ind6", "ind7", "ind8", "ind9" };
-        shell_print(sh, "  %-6s  prev  now", "name");
-        for (int i = 0; i < 6; i++) {
-            int cur = gpio_pin_get_dt(inds[i]->config().pin) != 0 ? 1 : 0;
-            if (prev_state[i] < 0) {
-                shell_print(sh, "  %-6s   -    %d", ind_names[i], cur);
-            } else if (cur != prev_state[i]) {
-                shell_fprintf(sh, SHELL_VT100_COLOR_YELLOW,
-                    "  %-6s   %d    %d  <--\n", ind_names[i], prev_state[i], cur);
-            } else {
-                shell_print(sh, "  %-6s   %d    %d", ind_names[i], prev_state[i], cur);
-            }
-            prev_state[i] = cur;
         }
         return 0;
     }
@@ -747,10 +787,430 @@ static int cmd_cylinder_cfg(const struct shell *sh, size_t argc, char **argv)
     return -EINVAL;
 }
 
+// --- ConfigBlob: packed binary config for dump/load/flash ---
+
+#define CONFIG_BLOB_MAGIC 0x43464731  /* "CFG1" */
+#define CONFIG_BLOB_VERSION 1
+
+struct __attribute__((packed)) ConfigBlob {
+    uint32_t magic;
+    uint8_t version;
+    MotorParams motors[3];
+    config::TablePositions table_pos;
+    IoConfig io;
+    uint32_t crc;
+};
+
+static void blob_snapshot(ConfigBlob *blob, engine::Context *ctx)
+{
+    blob->magic = CONFIG_BLOB_MAGIC;
+    blob->version = CONFIG_BLOB_VERSION;
+
+    StepperMotor *motors[] = { ctx->conveyor, ctx->width, ctx->table };
+    for (int i = 0; i < 3; i++) {
+        snapshot_params(i, motors[i]);
+        blob->motors[i] = params[i];
+    }
+
+    if (ctx->recipe) {
+        blob->table_pos = ctx->recipe->table_pos;
+    } else {
+        memset(&blob->table_pos, 0, sizeof(blob->table_pos));
+    }
+
+    component::Sensor *sensors[] = {
+        ctx->laser1, ctx->laser2, ctx->laser3, ctx->table_home,
+        ctx->cyl1_a, ctx->cyl1_b, ctx->cyl2_a, ctx->cyl2_b,
+        ctx->cyl3_a, ctx->cyl3_b
+    };
+    for (int i = 0; i < 10; i++) {
+        blob->io.sensor_active_high[i] = sensors[i]->activeHigh();
+    }
+
+    component::Sensor *inds[] = {
+        ctx->cyl3_a, ctx->cyl3_b,
+        ctx->cyl1_a, ctx->cyl1_b,
+        ctx->cyl2_a, ctx->cyl2_b,
+    };
+    component::Cylinder *cyls[] = { ctx->stopper, ctx->rfid, ctx->locker };
+    for (int i = 0; i < 3; i++) {
+        blob->io.cyl_sensor_a[i] = 0xFF;
+        blob->io.cyl_sensor_b[i] = 0xFF;
+        for (int j = 0; j < 6; j++) {
+            if (cyls[i]->config().sensor_a == inds[j]->config().pin)
+                blob->io.cyl_sensor_a[i] = j;
+            if (cyls[i]->config().sensor_b == inds[j]->config().pin)
+                blob->io.cyl_sensor_b[i] = j;
+        }
+    }
+
+    for (int i = 0; i < 3; i++) {
+        blob->io.cyl_idle_pos[i] = saved_io_cfg.cyl_idle_pos[i];
+    }
+
+    blob->crc = crc32_ieee((const uint8_t *)blob,
+                           offsetof(ConfigBlob, crc));
+}
+
+static void blob_apply(const ConfigBlob *blob, engine::Context *ctx)
+{
+    for (int i = 0; i < 3; i++) {
+        params[i] = blob->motors[i];
+    }
+    StepperMotor *motors[] = { ctx->conveyor, ctx->width, ctx->table };
+    for (int i = 0; i < 3; i++) {
+        apply_params(i, motors[i]);
+    }
+
+    if (ctx->recipe) {
+        ctx->recipe->table_pos = blob->table_pos;
+    }
+
+    component::Sensor *sensors[] = {
+        ctx->laser1, ctx->laser2, ctx->laser3, ctx->table_home,
+        ctx->cyl1_a, ctx->cyl1_b, ctx->cyl2_a, ctx->cyl2_b,
+        ctx->cyl3_a, ctx->cyl3_b
+    };
+    for (int i = 0; i < 10; i++) {
+        sensors[i]->setActiveHigh(blob->io.sensor_active_high[i]);
+    }
+
+    component::Sensor *inds[] = {
+        ctx->cyl3_a, ctx->cyl3_b,
+        ctx->cyl1_a, ctx->cyl1_b,
+        ctx->cyl2_a, ctx->cyl2_b,
+    };
+    component::Cylinder *cyls[] = { ctx->stopper, ctx->rfid, ctx->locker };
+    for (int i = 0; i < 3; i++) {
+        uint8_t ia = blob->io.cyl_sensor_a[i];
+        uint8_t ib = blob->io.cyl_sensor_b[i];
+        if (ia < 6) cyls[i]->setSensorA(inds[ia]->config().pin);
+        if (ib < 6) cyls[i]->setSensorB(inds[ib]->config().pin);
+    }
+
+    for (int i = 0; i < 3; i++) {
+        saved_io_cfg.cyl_idle_pos[i] = blob->io.cyl_idle_pos[i];
+    }
+}
+
+// --- cfg dump ---
+
+static const char *motor_names[] = { "motor1", "motor2", "motor3" };
+static const char *sensor_names_all[] = {
+    "laser1", "laser2", "laser3", "table_home",
+    "ind4", "ind5", "ind6", "ind7", "ind8", "ind9"
+};
+
+static int cmd_dump(const struct shell *sh, size_t argc, char **argv)
+{
+    auto *ctx = app::context();
+    if (!ctx) { shell_error(sh, "not init"); return -EINVAL; }
+
+    bool bin_mode = (argc >= 2 && strcmp(argv[1], "bin") == 0);
+
+    ConfigBlob blob;
+    blob_snapshot(&blob, ctx);
+
+    if (bin_mode) {
+        shell_print(sh, "#CFG_BIN_V1 %u bytes", (unsigned)sizeof(blob));
+        const uint8_t *p = (const uint8_t *)&blob;
+        for (size_t i = 0; i < sizeof(blob); i += 16) {
+            char line[64];
+            int pos = 0;
+            for (size_t j = i; j < i + 16 && j < sizeof(blob); j++) {
+                pos += snprintf(line + pos, sizeof(line) - pos, "%02X", p[j]);
+            }
+            shell_print(sh, "%s", line);
+        }
+        shell_print(sh, "#END");
+        return 0;
+    }
+
+    shell_print(sh, "#CFG_V1");
+    for (int i = 0; i < 3; i++) {
+        shell_print(sh, "%s.home_rpm=%u", motor_names[i], blob.motors[i].home_rpm);
+        shell_print(sh, "%s.limit_min=%d", motor_names[i], blob.motors[i].soft_limit_min);
+        shell_print(sh, "%s.limit_max=%d", motor_names[i], blob.motors[i].soft_limit_max);
+        shell_print(sh, "%s.safe_pos=%d", motor_names[i], blob.motors[i].safe_position);
+        shell_print(sh, "%s.accel_start=%u", motor_names[i], blob.motors[i].accel_start_rpm);
+        shell_print(sh, "%s.accel_rate=%u", motor_names[i], blob.motors[i].accel_rpm_s);
+        shell_print(sh, "%s.invert=%d", motor_names[i], blob.motors[i].invert_dir ? 1 : 0);
+    }
+    shell_print(sh, "table.guides_clear=%.2f", (double)blob.table_pos.guides_clear);
+    shell_print(sh, "table.pins_touch=%.2f", (double)blob.table_pos.pins_touch);
+    shell_print(sh, "table.pins_contact=%.2f", (double)blob.table_pos.pins_contact);
+    for (int i = 0; i < 10; i++) {
+        shell_print(sh, "sensor.%s=%d", sensor_names_all[i],
+                    blob.io.sensor_active_high[i] ? 1 : 0);
+    }
+    shell_print(sh, "cyl.stopper_a=%u", blob.io.cyl_sensor_a[0]);
+    shell_print(sh, "cyl.stopper_b=%u", blob.io.cyl_sensor_b[0]);
+    shell_print(sh, "cyl.rfid_a=%u", blob.io.cyl_sensor_a[1]);
+    shell_print(sh, "cyl.rfid_b=%u", blob.io.cyl_sensor_b[1]);
+    shell_print(sh, "cyl.locker_a=%u", blob.io.cyl_sensor_a[2]);
+    shell_print(sh, "cyl.locker_b=%u", blob.io.cyl_sensor_b[2]);
+    shell_print(sh, "cyl.stopper_idle=%c", blob.io.cyl_idle_pos[0] ? 'b' : 'a');
+    shell_print(sh, "cyl.rfid_idle=%c", blob.io.cyl_idle_pos[1] ? 'b' : 'a');
+    shell_print(sh, "cyl.locker_idle=%c", blob.io.cyl_idle_pos[2] ? 'b' : 'a');
+    shell_print(sh, "#END");
+    return 0;
+}
+
+// --- cfg load ---
+
+static int parse_config_line(const char *line, engine::Context *ctx)
+{
+    if (line[0] == '#') return 0;
+
+    const char *eq = strchr(line, '=');
+    if (!eq) return -EINVAL;
+
+    char key[48];
+    size_t klen = eq - line;
+    if (klen >= sizeof(key)) return -EINVAL;
+    memcpy(key, line, klen);
+    key[klen] = '\0';
+    const char *val = eq + 1;
+
+    for (int i = 0; i < 3; i++) {
+        char prefix[8];
+        snprintf(prefix, sizeof(prefix), "motor%d.", i + 1);
+        size_t plen = strlen(prefix);
+        if (strncmp(key, prefix, plen) != 0) continue;
+        const char *field = key + plen;
+
+        auto *cfg = const_cast<StepperMotorConfig *>(
+            &((StepperMotor *[]){ctx->conveyor, ctx->width, ctx->table})[i]->config());
+
+        if (strcmp(field, "home_rpm") == 0) cfg->home_rpm = atoi(val);
+        else if (strcmp(field, "limit_min") == 0) cfg->soft_limit_min = atoi(val);
+        else if (strcmp(field, "limit_max") == 0) cfg->soft_limit_max = atoi(val);
+        else if (strcmp(field, "safe_pos") == 0) cfg->safe_position = atoi(val);
+        else if (strcmp(field, "accel_start") == 0) cfg->accel.start_rpm = atoi(val);
+        else if (strcmp(field, "accel_rate") == 0) cfg->accel.accel_rpm_s = atoi(val);
+        else if (strcmp(field, "invert") == 0) cfg->invert_dir = atoi(val) != 0;
+        else return -EINVAL;
+        return 0;
+    }
+
+    if (strncmp(key, "table.", 6) == 0 && ctx->recipe) {
+        const char *field = key + 6;
+        if (strcmp(field, "guides_clear") == 0) ctx->recipe->table_pos.guides_clear = strtof(val, nullptr);
+        else if (strcmp(field, "pins_touch") == 0) ctx->recipe->table_pos.pins_touch = strtof(val, nullptr);
+        else if (strcmp(field, "pins_contact") == 0) ctx->recipe->table_pos.pins_contact = strtof(val, nullptr);
+        else return -EINVAL;
+        return 0;
+    }
+
+    if (strncmp(key, "sensor.", 7) == 0) {
+        const char *name = key + 7;
+        component::Sensor *sensors[] = {
+            ctx->laser1, ctx->laser2, ctx->laser3, ctx->table_home,
+            ctx->cyl1_a, ctx->cyl1_b, ctx->cyl2_a, ctx->cyl2_b,
+            ctx->cyl3_a, ctx->cyl3_b
+        };
+        for (int i = 0; i < 10; i++) {
+            if (strcmp(name, sensor_names_all[i]) == 0) {
+                sensors[i]->setActiveHigh(atoi(val) != 0);
+                return 0;
+            }
+        }
+        return -EINVAL;
+    }
+
+    if (strncmp(key, "cyl.", 4) == 0) {
+        const char *field = key + 4;
+
+        // Handle idle position: cyl.stopper_idle, cyl.rfid_idle, cyl.locker_idle
+        if (strcmp(field, "stopper_idle") == 0) {
+            saved_io_cfg.cyl_idle_pos[0] = (val[0] == 'b' || val[0] == 'B' || val[0] == '1') ? 1 : 0;
+            return 0;
+        }
+        if (strcmp(field, "rfid_idle") == 0) {
+            saved_io_cfg.cyl_idle_pos[1] = (val[0] == 'b' || val[0] == 'B' || val[0] == '1') ? 1 : 0;
+            return 0;
+        }
+        if (strcmp(field, "locker_idle") == 0) {
+            saved_io_cfg.cyl_idle_pos[2] = (val[0] == 'b' || val[0] == 'B' || val[0] == '1') ? 1 : 0;
+            return 0;
+        }
+
+        component::Sensor *inds[] = {
+            ctx->cyl3_a, ctx->cyl3_b,
+            ctx->cyl1_a, ctx->cyl1_b,
+            ctx->cyl2_a, ctx->cyl2_b,
+        };
+        component::Cylinder *cyls[] = { ctx->stopper, ctx->rfid, ctx->locker };
+        int cyl_idx = -1;
+        bool is_a = false;
+        if (strncmp(field, "stopper_", 8) == 0) { cyl_idx = 0; is_a = (field[8] == 'a'); }
+        else if (strncmp(field, "rfid_", 5) == 0) { cyl_idx = 1; is_a = (field[5] == 'a'); }
+        else if (strncmp(field, "locker_", 7) == 0) { cyl_idx = 2; is_a = (field[7] == 'a'); }
+        else return -EINVAL;
+
+        uint8_t idx = atoi(val);
+        if (idx >= 6) return -EINVAL;
+        if (is_a) cyls[cyl_idx]->setSensorA(inds[idx]->config().pin);
+        else cyls[cyl_idx]->setSensorB(inds[idx]->config().pin);
+        return 0;
+    }
+
+    return -EINVAL;
+}
+
+static int cmd_load(const struct shell *sh, size_t argc, char **argv)
+{
+    auto *ctx = app::context();
+    if (!ctx) { shell_error(sh, "not init"); return -EINVAL; }
+
+    if (app::accessLevel() < app::AccessLevel::FACTORY) {
+        shell_error(sh, "Factory access required.");
+        return -EACCES;
+    }
+
+    if (argc < 2) {
+        shell_print(sh, "usage: cfg load <key>=<value>");
+        shell_print(sh, "       cfg load bin <hex lines...>  — load binary dump");
+        shell_print(sh, "  Paste output of 'cfg dump' line by line.");
+        return -EINVAL;
+    }
+
+    if (strcmp(argv[1], "bin") == 0) {
+        if (argc < 3) {
+            shell_error(sh, "usage: cfg load bin <hex_data>");
+            return -EINVAL;
+        }
+        ConfigBlob blob;
+        uint8_t *dst = (uint8_t *)&blob;
+        size_t dst_len = 0;
+
+        for (int a = 2; a < (int)argc && dst_len < sizeof(blob); a++) {
+            const char *hex = argv[a];
+            size_t hlen = strlen(hex);
+            for (size_t i = 0; i + 1 < hlen && dst_len < sizeof(blob); i += 2) {
+                char byte_str[3] = { hex[i], hex[i + 1], '\0' };
+                dst[dst_len++] = (uint8_t)strtoul(byte_str, nullptr, 16);
+            }
+        }
+
+        if (dst_len != sizeof(blob)) {
+            shell_error(sh, "Size mismatch: got %u, expected %u",
+                        (unsigned)dst_len, (unsigned)sizeof(blob));
+            return -EINVAL;
+        }
+        if (blob.magic != CONFIG_BLOB_MAGIC) {
+            shell_error(sh, "Bad magic: 0x%08X", blob.magic);
+            return -EINVAL;
+        }
+        uint32_t calc_crc = crc32_ieee((const uint8_t *)&blob, offsetof(ConfigBlob, crc));
+        if (blob.crc != calc_crc) {
+            shell_error(sh, "CRC mismatch: stored=0x%08X calc=0x%08X", blob.crc, calc_crc);
+            return -EINVAL;
+        }
+        blob_apply(&blob, ctx);
+        shell_print(sh, "Binary config applied. Run 'cfg save' to persist.");
+        return 0;
+    }
+
+    // Text mode: concatenate all argv into a single line
+    char line[128];
+    int pos = 0;
+    for (int i = 1; i < (int)argc && pos < (int)sizeof(line) - 1; i++) {
+        if (i > 1) line[pos++] = ' ';
+        size_t len = strlen(argv[i]);
+        if (pos + (int)len >= (int)sizeof(line) - 1) break;
+        memcpy(line + pos, argv[i], len);
+        pos += len;
+    }
+    line[pos] = '\0';
+
+    int rc = parse_config_line(line, ctx);
+    if (rc == 0) {
+        shell_print(sh, "OK: %s", line);
+    } else {
+        shell_error(sh, "Failed to parse: %s", line);
+    }
+    return rc;
+}
+
+// --- cfg flash — write blob to config partition ---
+
+static int cmd_flash_blob(const struct shell *sh, size_t argc, char **argv)
+{
+    auto *ctx = app::context();
+    if (!ctx) { shell_error(sh, "not init"); return -EINVAL; }
+
+    if (app::accessLevel() < app::AccessLevel::FACTORY) {
+        shell_error(sh, "Factory access required.");
+        return -EACCES;
+    }
+
+    const struct flash_area *fa;
+    int rc = flash_area_open(FIXED_PARTITION_ID(config_partition), &fa);
+    if (rc) {
+        shell_error(sh, "Failed to open config partition: %d", rc);
+        return rc;
+    }
+
+    ConfigBlob blob;
+    blob_snapshot(&blob, ctx);
+
+    rc = flash_area_erase(fa, 0, fa->fa_size);
+    if (rc) {
+        shell_error(sh, "Erase failed: %d", rc);
+        flash_area_close(fa);
+        return rc;
+    }
+
+    rc = flash_area_write(fa, 0, &blob, sizeof(blob));
+    flash_area_close(fa);
+    if (rc) {
+        shell_error(sh, "Write failed: %d", rc);
+        return rc;
+    }
+
+    shell_print(sh, "Config blob written to flash partition (%u bytes, CRC=0x%08X)",
+                (unsigned)sizeof(blob), blob.crc);
+    return 0;
+}
+
+// --- Boot-time: try loading from config partition if ZMS is empty ---
+
+void config_try_blob_fallback(void)
+{
+    if (params_loaded || table_pos_loaded || io_cfg_loaded) {
+        return;
+    }
+
+    const struct flash_area *fa;
+    int rc = flash_area_open(FIXED_PARTITION_ID(config_partition), &fa);
+    if (rc) return;
+
+    ConfigBlob blob;
+    rc = flash_area_read(fa, 0, &blob, sizeof(blob));
+    flash_area_close(fa);
+    if (rc) return;
+
+    if (blob.magic != CONFIG_BLOB_MAGIC) return;
+
+    uint32_t calc_crc = crc32_ieee((const uint8_t *)&blob, offsetof(ConfigBlob, crc));
+    if (blob.crc != calc_crc) return;
+
+    auto *ctx = app::context();
+    if (!ctx) return;
+
+    blob_apply(&blob, ctx);
+    LOG_INF("Applied config from flash blob (version=%u, CRC=0x%08X)",
+            blob.version, blob.crc);
+}
+
 SHELL_STATIC_SUBCMD_SET_CREATE(config_cmds,
     SHELL_CMD(show, NULL, "Show all motor parameters", cmd_show),
     SHELL_CMD(set, NULL, "Set param: cfg set <motor> <param> <value>", cmd_set),
     SHELL_CMD(save, NULL, "Save params to flash", cmd_save),
+    SHELL_CMD(dump, NULL, "Dump config: cfg dump [bin]", cmd_dump),
+    SHELL_CMD(load, NULL, "Load config: cfg load <key>=<val> | bin <hex>", cmd_load),
+    SHELL_CMD(flash, NULL, "Write config blob to flash partition", cmd_flash_blob),
     SHELL_CMD(limit, NULL, "Soft limits per motor", cmd_limit),
     SHELL_CMD(sensor, NULL, "Sensor polarity: cfg sensor <name> <0|1>", cmd_sensor),
     SHELL_CMD(cylinder, NULL, "Cylinder: cfg cylinder fire|read|map", cmd_cylinder_cfg),

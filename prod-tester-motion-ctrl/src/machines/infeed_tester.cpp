@@ -147,6 +147,7 @@ static StepperMotorConfig table_cfg = {
 };
 
 static CylinderConfig stopper_cfg = {
+    .name = "stopper",
     .coil_a = &sol1a_spec,
     .coil_b = &sol1b_spec,
     .sensor_a = &ind5_spec,
@@ -155,6 +156,7 @@ static CylinderConfig stopper_cfg = {
 };
 
 static CylinderConfig rfid_cfg = {
+    .name = "rfid",
     .coil_a = &sol2a_spec,
     .coil_b = &sol2b_spec,
     .sensor_a = &ind6_spec,
@@ -163,6 +165,7 @@ static CylinderConfig rfid_cfg = {
 };
 
 static CylinderConfig locker_cfg = {
+    .name = "locker",
     .coil_a = &sol3a_spec,
     .coil_b = &sol3b_spec,
     .sensor_a = &ind9_spec,

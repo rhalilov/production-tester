@@ -8,6 +8,7 @@ namespace component {
 enum class CylPosition : uint8_t { POS_A, POS_B, UNKNOWN };
 
 struct CylinderConfig {
+    const char *name;
     const gpio_dt_spec *coil_a;
     const gpio_dt_spec *coil_b;
     const gpio_dt_spec *sensor_a;

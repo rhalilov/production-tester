@@ -1,0 +1,17 @@
+---
+description: Always use STM32_Programmer_CLI for flashing firmware
+alwaysApply: true
+---
+
+# Flashing Rule
+
+Always flash firmware using STM32_Programmer_CLI:
+
+```
+& "C:\Program Files\STMicroelectronics\STM32Cube\STM32CubeProgrammer\bin\STM32_Programmer_CLI.exe" -c port=SWD mode=UR -w <binary_path> 0x08000000 -v -rst
+```
+
+- Use `mode=UR` (under reset) by default.
+- Always verify (`-v`) and reset (`-rst`) after flashing.
+- Binary is at: `prod-tester-motion-ctrl/build/zephyr/zephyr.bin`
+- Do NOT use `west flash` or any other method.
