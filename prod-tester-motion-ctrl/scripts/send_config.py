@@ -171,13 +171,20 @@ def dump_config(ser, output_file):
 
 def console(ser):
     """Interactive console — read user input, send to serial."""
-    print("--- Console active (Ctrl+C to exit) ---")
-    try:
-        while True:
+    print("--- Console active (type 'exit' or 'quit' to close) ---")
+    while True:
+        try:
             line = input()
+            if line.strip().lower() in ("exit", "quit"):
+                print("\n--- Disconnected ---")
+                break
             ser.write((line + "\r\n").encode())
-    except (KeyboardInterrupt, EOFError):
-        print("\n--- Disconnected ---")
+        except KeyboardInterrupt:
+            print()
+            continue
+        except EOFError:
+            print("\n--- Disconnected ---")
+            break
 
 
 def connect_mode(host, port, config_file, delay_ms):

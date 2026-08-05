@@ -501,15 +501,14 @@ static StepDef infeed_steps[] = {
       16, nullptr, 0
     },
 
-    // Step 16: SMEMA handoff downstream — wait for downstream to request board
+    // Step 16: SMEMA handoff downstream — wait for next machine to request board
     { "smema_out",
       [](Context &ctx) {
           TRACE_ACT("conveyor STOPPED at laser3, board ready");
           TRACE_ACT("smema_ba_out=HIGH");
           ctx.smema->setBoardAvailableOut(true);
-          ctx.smema_seen_low = !ctx.smema->machineReadyIn();
-          TRACE_WAIT("downstream MR_IN request (low->high)");
-          ctx.wait_desc = "downstream MR_IN request";
+          TRACE_WAIT("Up BA low (next machine request)");
+          ctx.wait_desc = "Up BA low (next machine request)";
       },
       nullptr,
       [](Context &ctx) {
@@ -517,13 +516,7 @@ static StepDef infeed_steps[] = {
           ctx.smema->setBoardAvailableOut(false);
       },
       [](Context &ctx) -> bool {
-          if (!ctx.smema_seen_low) {
-              if (!ctx.smema->machineReadyIn()) {
-                  ctx.smema_seen_low = true;
-              }
-              return false;
-          }
-          return ctx.smema->machineReadyIn();
+          return !ctx.smema->boardAvailableIn();
       },
       17, nullptr, 0
     },

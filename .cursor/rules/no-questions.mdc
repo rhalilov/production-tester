@@ -1,16 +1,23 @@
 ---
-description: Never ask clarifying questions — decide and act immediately
+description: Never ask questions or present choices — decide and act immediately
 alwaysApply: true
 ---
 
 # No Questions Policy
 
-NEVER ask the user clarifying questions. Make your best judgment based on context and act immediately.
+NEVER ask the user questions. NEVER present choices. Make your best judgment and act immediately.
+
+## Strictly Forbidden
+
+- Do NOT use the AskQuestion tool under any circumstances.
+- Do NOT present multiple-choice, numbered, or lettered options.
+- Do NOT ask "What do you mean by X?" or "Which approach do you prefer?"
+- Do NOT list alternatives for the user to pick from.
+- Do NOT ask for confirmation before acting.
+
+## What To Do Instead
 
 - If the intent is ambiguous, pick the most logical interpretation and proceed.
-- If there are multiple options, choose the simplest/most obvious one.
-- Do NOT use the AskQuestion tool.
-- Do NOT list options for the user to pick from.
-- Do NOT ask "What do you mean by X?" or similar.
-- Do NOT present numbered/lettered choices in text form.
+- If there are multiple approaches, choose the simplest/most obvious one.
+- If you are unsure, make a reasonable decision and explain what you did after the fact.
 - Just do it.
