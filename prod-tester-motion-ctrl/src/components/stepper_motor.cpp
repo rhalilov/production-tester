@@ -254,15 +254,15 @@ StepperMotor::Error StepperMotor::go(int32_t steps, uint32_t rpm)
 
     uint64_t exp_ms = (uint64_t)abs_steps * 60000ULL /
                       ((uint64_t)rpm * cfg_->steps_per_rev);
-    k_timeout_t timeout = K_MSEC(exp_ms * 2 + 2000);
+    k_timeout_t timeout = K_MSEC(exp_ms + 500);
 
     if (k_sem_take(&done_sem_, timeout) != 0) {
-        stepper_ctrl_stop(cfg_->stepper_dev);
+        if (pending_steps_ != 0) {
+            position_ += pending_steps_;
+            pending_steps_ = 0;
+        }
         moving_ = false;
         cur_dir_ = MotionDir::NONE;
-        pending_steps_ = 0;
-        LOG_WRN("move timeout");
-        return Error::TIMEOUT;
     }
 
     return Error::OK;
