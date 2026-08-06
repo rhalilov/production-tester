@@ -263,9 +263,56 @@ static int cmd_cylinder(const struct shell *sh, size_t argc, char **argv)
     return -EINVAL;
 }
 
+static int cmd_smema(const struct shell *sh, size_t argc, char **argv)
+{
+    auto *ctx = app::context();
+    if (!ctx || !ctx->smema) { shell_error(sh, "not init"); return -EINVAL; }
+
+    if (argc < 2) {
+        shell_print(sh, "usage: manual smema <mr_out|ba_out|ba_fail_out|off> [0|1]");
+        shell_print(sh, "  mr_out <0|1>        — Machine Ready to upstream");
+        shell_print(sh, "  ba_out <0|1>        — Board Available to downstream");
+        shell_print(sh, "  ba_fail_out <0|1>   — Board Available NG to downstream");
+        shell_print(sh, "  off                 — all outputs LOW");
+        shell_print(sh, "Current state:");
+        shell_print(sh, "  Up BA (in):   %s", ctx->smema->boardAvailableIn() ? "HIGH" : "LOW");
+        shell_print(sh, "  Down MR (in): %s", ctx->smema->machineReadyIn() ? "HIGH" : "LOW");
+        return -EINVAL;
+    }
+
+    if (strcmp(argv[1], "off") == 0) {
+        ctx->smema->allOff();
+        shell_print(sh, "SMEMA all outputs LOW");
+        return 0;
+    }
+
+    if (argc < 3) {
+        shell_error(sh, "usage: manual smema %s <0|1>", argv[1]);
+        return -EINVAL;
+    }
+
+    bool val = (atoi(argv[2]) != 0);
+
+    if (strcmp(argv[1], "mr_out") == 0) {
+        ctx->smema->setMachineReadyOut(val);
+        shell_print(sh, "SMEMA MR_OUT = %s", val ? "HIGH" : "LOW");
+    } else if (strcmp(argv[1], "ba_out") == 0) {
+        ctx->smema->setBoardAvailableOut(val);
+        shell_print(sh, "SMEMA BA_OUT = %s", val ? "HIGH" : "LOW");
+    } else if (strcmp(argv[1], "ba_fail_out") == 0) {
+        ctx->smema->setBoardAvailableFailOut(val);
+        shell_print(sh, "SMEMA BA_FAIL_OUT = %s", val ? "HIGH" : "LOW");
+    } else {
+        shell_error(sh, "Unknown: %s (mr_out|ba_out|ba_fail_out|off)", argv[1]);
+        return -EINVAL;
+    }
+    return 0;
+}
+
 SHELL_STATIC_SUBCMD_SET_CREATE(manual_cmds,
     SHELL_CMD(motor, NULL, "Motor control (run/stop/go/home)", cmd_motor),
     SHELL_CMD(cylinder, NULL, "Cylinder control (a/b/off)", cmd_cylinder),
+    SHELL_CMD(smema, NULL, "SMEMA output control (mr_out/ba_out/off)", cmd_smema),
     SHELL_SUBCMD_SET_END
 );
 

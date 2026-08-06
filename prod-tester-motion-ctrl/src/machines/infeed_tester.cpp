@@ -270,7 +270,7 @@ static StepDef infeed_steps[] = {
       nullptr,
       nullptr,
       [](Context &ctx) -> bool {
-          return !ctx.smema->machineReadyIn();
+          return !ctx.smema->boardAvailableIn();
       },
       1, nullptr, 0
     },
@@ -507,8 +507,8 @@ static StepDef infeed_steps[] = {
           TRACE_ACT("conveyor STOPPED at laser3, board ready");
           TRACE_ACT("smema_ba_out=HIGH");
           ctx.smema->setBoardAvailableOut(true);
-          TRACE_WAIT("Up BA low (next machine request)");
-          ctx.wait_desc = "Up BA low (next machine request)";
+          TRACE_WAIT("Down MR (next machine request)");
+          ctx.wait_desc = "Down MR (next machine request)";
       },
       nullptr,
       [](Context &ctx) {
@@ -516,7 +516,7 @@ static StepDef infeed_steps[] = {
           ctx.smema->setBoardAvailableOut(false);
       },
       [](Context &ctx) -> bool {
-          return !ctx.smema->boardAvailableIn();
+          return !ctx.smema->machineReadyIn();
       },
       17, nullptr, 0
     },
