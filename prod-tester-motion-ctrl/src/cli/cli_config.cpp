@@ -1014,6 +1014,9 @@ static int cmd_dump(const struct shell *sh, size_t argc, char **argv)
     shell_print(sh, "cyl.stopper_name=%s", blob.io.cyl_name[0]);
     shell_print(sh, "cyl.rfid_name=%s", blob.io.cyl_name[1]);
     shell_print(sh, "cyl.locker_name=%s", blob.io.cyl_name[2]);
+    shell_print(sh, "conv.belt_mm_per_rev=%.2f", (double)ctx->conveyor->beltMmPerRev());
+    shell_print(sh, "conv.width_mm_per_rev=%.2f", (double)ctx->conveyor->widthMmPerRev());
+    shell_print(sh, "head.mm_per_rev=%.2f", (double)ctx->head->mmPerRev());
     shell_print(sh, "#END");
     return 0;
 }
@@ -1131,6 +1134,24 @@ static int parse_config_line(const char *line, engine::Context *ctx)
         if (idx >= 6) return -EINVAL;
         if (is_a) cyls[cyl_idx]->setSensorA(inds[idx]->config().pin);
         else cyls[cyl_idx]->setSensorB(inds[idx]->config().pin);
+        return 0;
+    }
+
+    if (strncmp(key, "conv.", 5) == 0) {
+        const char *field = key + 5;
+        if (strcmp(field, "belt_mm_per_rev") == 0) {
+            ctx->conveyor->config().belt_mm_per_rev = strtof(val, nullptr);
+            return 0;
+        }
+        if (strcmp(field, "width_mm_per_rev") == 0) {
+            ctx->conveyor->config().width_mm_per_rev = strtof(val, nullptr);
+            return 0;
+        }
+        return -EINVAL;
+    }
+
+    if (strcmp(key, "head.mm_per_rev") == 0) {
+        ctx->head->config().mm_per_rev = strtof(val, nullptr);
         return 0;
     }
 

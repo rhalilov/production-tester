@@ -612,7 +612,7 @@ int machine_init(void)
     sens_cyl3b.init(cyl3b_cfg);
 
     // High-level assemblies
-    Conveyor::Config conv_cfg = { .belt_mm_per_rev = 0, .width_mm_per_rev = 4.0f };
+    Conveyor::Config conv_cfg = { .belt_mm_per_rev = 1.0f, .width_mm_per_rev = 4.0f };
     machine_conveyor.init(&motor_conveyor, &motor_width,
                           &sens_laser1, &sens_laser2, &sens_laser3,
                           &smema_upstream, &smema_downstream,

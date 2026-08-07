@@ -254,16 +254,16 @@ def _print_header(title, path=None):
 # --- Parameter Definitions ---
 
 CONVEYOR_PARAMS = [
-    ("Home Speed",      "cfg set conveyor home_rpm {v}",     10,   "rpm"),
-    ("Accel Start",     "cfg set conveyor accel_start {v}",  10,   "rpm"),
-    ("Accel Rate",      "cfg set conveyor accel_rate {v}",   100,  "rpm/s"),
+    ("Home Speed",      "cfg set conveyor home_rpm {v}",     1,    "mm/s"),
+    ("Accel Start",     "cfg set conveyor accel_start {v}",  1,    "mm/s"),
+    ("Accel Rate",      "cfg set conveyor accel_rate {v}",   5,    "mm/s2"),
     ("Belt mm/rev",     "cfg set conveyor mm_per_rev {v}",   1.0,  "mm"),
 ]
 
 HEAD_PARAMS = [
-    ("Home Speed",      "cfg set head home_rpm {v}",        5,    "mm/min"),
-    ("Accel Start",     "cfg set head accel_start {v}",     5,    "mm/min"),
-    ("Accel Rate",      "cfg set head accel_rate {v}",      50,   "mm/min/s"),
+    ("Home Speed",      "cfg set head home_rpm {v}",        1,    "mm/s"),
+    ("Accel Start",     "cfg set head accel_start {v}",     1,    "mm/s"),
+    ("Accel Rate",      "cfg set head accel_rate {v}",      5,    "mm/s2"),
     ("mm/rev",          "cfg set head mm_per_rev {v}",      0.5,  "mm"),
     ("Safe Position",   "cfg set head safe_pos {v}",        100,  "steps"),
     ("Guides Clear",    "cfg set head guides_clear {v}",    0.5,  "mm"),
@@ -274,9 +274,9 @@ HEAD_PARAMS = [
 ]
 
 WIDTH_PARAMS = [
-    ("Home Speed",      "cfg set width home_rpm {v}",        5,    "mm/min"),
-    ("Accel Start",     "cfg set width accel_start {v}",     5,    "mm/min"),
-    ("Accel Rate",      "cfg set width accel_rate {v}",      50,   "mm/min/s"),
+    ("Home Speed",      "cfg set width home_rpm {v}",        1,    "mm/s"),
+    ("Accel Start",     "cfg set width accel_start {v}",     1,    "mm/s"),
+    ("Accel Rate",      "cfg set width accel_rate {v}",      5,    "mm/s2"),
     ("mm/rev",          "cfg set width mm_per_rev {v}",      0.5,  "mm"),
     ("Safe Position",   "cfg set width safe_pos {v}",        100,  "steps"),
     ("Soft Limit Min",  "cfg set width limit_min {v}",       1.0,  "mm"),
@@ -343,13 +343,14 @@ def _get_current_value(cfg_data, param_name, cmd_template, unit):
         if not num:
             return val
         raw = float(num.group(0))
-        # Convert RPM to mm/min if the unit asks for it
-        if unit in ("mm/min", "mm/min/s"):
+        # Convert RPM to mm/s if the unit asks for it
+        if unit in ("mm/s", "mm/s2"):
             motor = _motor_from_cmd(base_cmd)
             mpr = _get_mm_per_rev(cfg_data, motor)
             if mpr > 0:
-                converted = raw * mpr
+                converted = raw * mpr / 60.0
                 return f"{converted:.1f}"
+            return f"N/A"
         # For steps-based limits on linear axes, show as mm
         if unit == "mm" and field in ("soft_limit_min", "soft_limit_max"):
             mm_match = re.search(r'\(([-\d.]+)\s*mm\)', val)
@@ -461,7 +462,7 @@ def _adjust_param(ser, param_def, node_idx, level_name):
     while True:
         cfg_data = _read_current_values(ser, node_idx)
         mpr = _get_mm_per_rev(cfg_data, motor)
-        is_linear = unit in ("mm/min", "mm/min/s") and mpr > 0
+        is_linear = unit in ("mm/s", "mm/s2") and mpr > 0
         current = _get_current_value(cfg_data, name, cmd_template, unit)
 
         _clear_screen()
@@ -481,7 +482,7 @@ def _adjust_param(ser, param_def, node_idx, level_name):
         if key == '<':
             try:
                 new_display = float(current) - step
-                hw_val = new_display / mpr if is_linear else new_display
+                hw_val = new_display * 60.0 / mpr if is_linear else new_display
                 if is_linear:
                     hw_val = int(round(hw_val))
                 elif step == int(step) and '.' not in str(current):
@@ -494,7 +495,7 @@ def _adjust_param(ser, param_def, node_idx, level_name):
         elif key == '>':
             try:
                 new_display = float(current) + step
-                hw_val = new_display / mpr if is_linear else new_display
+                hw_val = new_display * 60.0 / mpr if is_linear else new_display
                 if is_linear:
                     hw_val = int(round(hw_val))
                 elif step == int(step) and '.' not in str(current):
@@ -526,7 +527,7 @@ def _adjust_param(ser, param_def, node_idx, level_name):
             if val_str:
                 try:
                     val = float(val_str)
-                    hw_val = val / mpr if is_linear else val
+                    hw_val = val * 60.0 / mpr if is_linear else val
                     if is_linear:
                         hw_val = int(round(hw_val))
                     elif step == int(step) and '.' not in val_str:

@@ -1,0 +1,51 @@
+cfg unlock factory
+cfg load motor1.home_rpm=10
+cfg load motor1.limit_min=0
+cfg load motor1.limit_max=0
+cfg load motor1.safe_pos=0
+cfg load motor1.accel_start=5
+cfg load motor1.accel_rate=120
+cfg load motor1.invert=0
+cfg load motor2.home_rpm=10
+cfg load motor2.limit_min=0
+cfg load motor2.limit_max=0
+cfg load motor2.safe_pos=0
+cfg load motor2.accel_start=5
+cfg load motor2.accel_rate=120
+cfg load motor2.invert=0
+cfg load motor3.home_rpm=100
+cfg load motor3.limit_min=-15000
+cfg load motor3.limit_max=0
+cfg load motor3.safe_pos=0
+cfg load motor3.accel_start=5
+cfg load motor3.accel_rate=120
+cfg load motor3.invert=0
+cfg load head.guides_clear=-10.00
+cfg load head.pins_touch=-25.00
+cfg load head.pins_contact=-30.00
+cfg load sensor.laser1=1
+cfg load sensor.laser2=1
+cfg load sensor.laser3=1
+cfg load sensor.head_home=1
+cfg load sensor.ind4=1
+cfg load sensor.ind5=1
+cfg load sensor.ind6=1
+cfg load sensor.ind7=1
+cfg load sensor.ind8=1
+cfg load sensor.ind9=1
+cfg load cyl.stopper_a=1
+cfg load cyl.stopper_b=0
+cfg load cyl.rfid_a=5
+cfg load cyl.rfid_b=4
+cfg load cyl.locker_a=3
+cfg load cyl.locker_b=2
+cfg load cyl.stopper_idle=b
+cfg load cyl.rfid_idle=b
+cfg load cyl.locker_idle=a
+cfg load cyl.stopper_name=stopper
+cfg load cyl.rfid_name=rfid
+cfg load cyl.locker_name=locker
+cfg set conveyor mm_per_rev 251.33
+cfg set width mm_per_rev 4.0
+cfg set head mm_per_rev 5.0
+cfg save
