@@ -122,7 +122,7 @@ static StepperMotorConfig width_cfg = {
     .mm_per_rev = 4.0f,    // width: 4mm per revolution
 };
 
-static StepperMotorConfig table_cfg = {
+static StepperMotorConfig head_cfg = {
     .stepper_dev = DEVICE_DT_GET(DT_NODELABEL(axis3)),
     .ena_pin = &ena3_spec,
     .alm_pins = alm_axis3,
@@ -137,14 +137,14 @@ static StepperMotorConfig table_cfg = {
     .auto_home = true,
     .home_rpm = 10,
     .has_limits = true,
-    .soft_limit_min = -15000,  // max table down (steps from home)
+    .soft_limit_min = -15000,  // max head down (steps from home)
     .soft_limit_max = 0,       // home = top
     .safe_position = 0,        // safe = home (top)
     .persist_position = true,
     .invert_dir = false,
     .accel = { .start_rpm = 5, .accel_rpm_s = 120 },
     .steps_per_rev = CONFIG_MOTOR_STEPS_PER_REV,
-    .mm_per_rev = 5.0f,    // table: 5mm per revolution
+    .mm_per_rev = 5.0f,    // head: 5mm per revolution
 };
 
 static CylinderConfig stopper_cfg = {
@@ -186,7 +186,7 @@ static SmemaPortConfig smema_cfg = {
 static SensorConfig laser1_cfg = { &laser1_spec, "laser1", 50, true };
 static SensorConfig laser2_cfg = { &laser2_spec, "laser2", 50, true };
 static SensorConfig laser3_cfg = { &laser3_spec, "laser3", 50, true };
-static SensorConfig table_home_cfg = { &photo10_spec, "table_home", 0, true };
+static SensorConfig head_home_cfg = { &photo10_spec, "head_home", 0, true };
 static SensorConfig cyl1a_cfg = { &ind6_spec, "ind6", 0, true };
 static SensorConfig cyl1b_cfg = { &ind7_spec, "ind7", 0, true };
 static SensorConfig cyl2a_cfg = { &ind8_spec, "ind8", 0, true };
@@ -198,7 +198,7 @@ static SensorConfig cyl3b_cfg = { &ind5_spec, "ind5", 0, true };
 
 static StepperMotor motor_conveyor;
 static StepperMotor motor_width;
-static StepperMotor motor_table;
+static StepperMotor motor_head;
 
 static Cylinder cyl_stopper;
 static Cylinder cyl_rfid;
@@ -209,7 +209,7 @@ static SmemaPort smema_port;
 static Sensor sens_laser1;
 static Sensor sens_laser2;
 static Sensor sens_laser3;
-static Sensor sens_table_home;
+static Sensor sens_head_home;
 static Sensor sens_cyl1a, sens_cyl1b;
 static Sensor sens_cyl2a, sens_cyl2b;
 static Sensor sens_cyl3a, sens_cyl3b;
@@ -222,12 +222,12 @@ static config::Recipe default_recipe = {
         { 10, 0 },                                       // [0] home/up rpm (unused, use motor config)
         { 40, 0 },                                       // [1] convey rpm
         { 10, CONFIG_MOTOR_STEPS_PER_REV / 2 },          // [2] creep rpm + steps
-        { 200, 0 },                                      // [3] table fast rpm
-        { 40, 0 },                                       // [4] table slow rpm
+        { 200, 0 },                                      // [3] head fast rpm
+        { 40, 0 },                                       // [4] head slow rpm
         { 40, 0 },                                       // [5] convey out rpm
         { 20, 0 },                                       // [6] eject rpm
     },
-    .table_pos = {
+    .head_pos = {
         .guides_clear = -10.0f,     // mm — guides out of board
         .pins_touch   = -25.0f,     // mm — probes just touching
         .pins_contact = -30.0f,     // mm — full contact (test)
@@ -245,7 +245,7 @@ static void interlock_check(Context &ctx, FaultManager &faults)
     ctx.laser1->poll();
     ctx.laser2->poll();
     ctx.laser3->poll();
-    ctx.table_home->poll();
+    ctx.head_home->poll();
     ctx.cyl1_a->poll();
     ctx.cyl1_b->poll();
     ctx.cyl2_a->poll();
@@ -254,7 +254,7 @@ static void interlock_check(Context &ctx, FaultManager &faults)
     ctx.cyl3_b->poll();
 
     // Check ALM signals
-    if (motor_conveyor.inAlarm() || motor_width.inAlarm() || motor_table.inAlarm()) {
+    if (motor_conveyor.inAlarm() || motor_width.inAlarm() || motor_head.inAlarm()) {
         faults.raise("Motor ALM asserted");
     }
 }
@@ -357,32 +357,32 @@ static StepDef infeed_steps[] = {
     // Step 6: Table down to pins_touch
     { "pins_touch",
       [](Context &ctx) {
-          int32_t target = ctx.table->mmToSteps(ctx.recipe->table_pos.pins_touch);
-          TRACE_ACT("table GOTO %.1fmm (%d steps) @%urpm",
-                    (double)ctx.recipe->table_pos.pins_touch, target,
+          int32_t target = ctx.head->mmToSteps(ctx.recipe->head_pos.pins_touch);
+          TRACE_ACT("head GOTO %.1fmm (%d steps) @%urpm",
+                    (double)ctx.recipe->head_pos.pins_touch, target,
                     ctx.recipe->motor_presets[3].rpm);
-          ctx.table->goTo(target, ctx.recipe->motor_presets[3].rpm);
-          TRACE_WAIT("table move done");
-          ctx.wait_desc = "table move done";
+          ctx.head->goTo(target, ctx.recipe->motor_presets[3].rpm);
+          TRACE_WAIT("head move done");
+          ctx.wait_desc = "head move done";
       },
       nullptr, nullptr,
-      [](Context &ctx) -> bool { return !ctx.table->isMoving(); },
+      [](Context &ctx) -> bool { return !ctx.head->isMoving(); },
       7, nullptr, 0
     },
 
     // Step 7: Table down to pins_contact
     { "pins_contact",
       [](Context &ctx) {
-          int32_t target = ctx.table->mmToSteps(ctx.recipe->table_pos.pins_contact);
-          TRACE_ACT("table GOTO %.1fmm (%d steps) @%urpm",
-                    (double)ctx.recipe->table_pos.pins_contact, target,
+          int32_t target = ctx.head->mmToSteps(ctx.recipe->head_pos.pins_contact);
+          TRACE_ACT("head GOTO %.1fmm (%d steps) @%urpm",
+                    (double)ctx.recipe->head_pos.pins_contact, target,
                     ctx.recipe->motor_presets[4].rpm);
-          ctx.table->goTo(target, ctx.recipe->motor_presets[4].rpm);
-          TRACE_WAIT("table move done");
-          ctx.wait_desc = "table move done";
+          ctx.head->goTo(target, ctx.recipe->motor_presets[4].rpm);
+          TRACE_WAIT("head move done");
+          ctx.wait_desc = "head move done";
       },
       nullptr, nullptr,
-      [](Context &ctx) -> bool { return !ctx.table->isMoving(); },
+      [](Context &ctx) -> bool { return !ctx.head->isMoving(); },
       8, nullptr, 0
     },
 
@@ -428,20 +428,20 @@ static StepDef infeed_steps[] = {
     },
 
     // Step 11: Table up to home
-    { "table_up",
+    { "head_up",
       [](Context &ctx) {
-          uint32_t rpm = ctx.table->config().home_rpm;
-          TRACE_ACT("table RUN +%urpm (up to home)", rpm);
-          ctx.table->run(rpm, MotionDir::POS);
-          TRACE_WAIT("table_home triggered");
-          ctx.wait_desc = "table_home triggered";
+          uint32_t rpm = ctx.head->config().home_rpm;
+          TRACE_ACT("head RUN +%urpm (up to home)", rpm);
+          ctx.head->run(rpm, MotionDir::POS);
+          TRACE_WAIT("head_home triggered");
+          ctx.wait_desc = "head_home triggered";
       },
       nullptr,
       [](Context &ctx) {
-          TRACE_ACT("table STOP");
-          ctx.table->stop();
+          TRACE_ACT("head STOP");
+          ctx.head->stop();
       },
-      [](Context &ctx) -> bool { return ctx.table_home->triggered(); },
+      [](Context &ctx) -> bool { return ctx.head_home->triggered(); },
       12, nullptr, 0
     },
 
@@ -571,8 +571,8 @@ int machine_init(void)
     err = motor_width.init(width_cfg);
     if (err) { LOG_ERR("width init: %d", err); return err; }
 
-    err = motor_table.init(table_cfg);
-    if (err) { LOG_ERR("table init: %d", err); return err; }
+    err = motor_head.init(head_cfg);
+    if (err) { LOG_ERR("head init: %d", err); return err; }
 
     // Cylinders
     err = cyl_stopper.init(stopper_cfg);
@@ -592,7 +592,7 @@ int machine_init(void)
     sens_laser1.init(laser1_cfg);
     sens_laser2.init(laser2_cfg);
     sens_laser3.init(laser3_cfg);
-    sens_table_home.init(table_home_cfg);
+    sens_head_home.init(head_home_cfg);
     sens_cyl1a.init(cyl1a_cfg);
     sens_cyl1b.init(cyl1b_cfg);
     sens_cyl2a.init(cyl2a_cfg);
@@ -603,7 +603,7 @@ int machine_init(void)
     // Wire up context
     machine_context.conveyor = &motor_conveyor;
     machine_context.width = &motor_width;
-    machine_context.table = &motor_table;
+    machine_context.head = &motor_head;
     machine_context.stopper = &cyl_stopper;
     machine_context.rfid = &cyl_rfid;
     machine_context.locker = &cyl_locker;
@@ -617,7 +617,7 @@ int machine_init(void)
     machine_context.cyl2_b = &sens_cyl2b;
     machine_context.cyl3_a = &sens_cyl3a;
     machine_context.cyl3_b = &sens_cyl3b;
-    machine_context.table_home = &sens_table_home;
+    machine_context.head_home = &sens_head_home;
     machine_context.recipe = &default_recipe;
     machine_context.last_result = TestResult::NONE;
     machine_context.mode = OperatingMode::AUTO;
@@ -628,10 +628,10 @@ int machine_init(void)
     // Enable motors
     motor_conveyor.setEnabled(true);
     motor_width.setEnabled(true);
-    motor_table.setEnabled(true);
+    motor_head.setEnabled(true);
 
-    // Auto-home table at boot (moved to main.cpp after settings load)
-    // if (table_cfg.auto_home) { ... }
+    // Auto-home head at boot (moved to main.cpp after settings load)
+    // if (head_cfg.auto_home) { ... }
 
     LOG_INF("Infeed tester machine init complete (%d steps)", INFEED_STEP_COUNT);
     return 0;

@@ -47,7 +47,7 @@ static StepperMotor *get_motor(const struct shell *sh, const char *arg)
     switch (n) {
     case 1: return ctx->conveyor;
     case 2: return ctx->width;
-    case 3: return ctx->table;
+    case 3: return ctx->head;
     default:
         shell_error(sh, "Motor %d not found (1-3)", n);
         return nullptr;
@@ -97,14 +97,14 @@ static int cmd_motor(const struct shell *sh, size_t argc, char **argv)
         if (argc >= 3 && strcmp(argv[2], "on") == 0) {
             ctx->conveyor->setEnabled(true);
             ctx->width->setEnabled(true);
-            ctx->table->setEnabled(true);
+            ctx->head->setEnabled(true);
             shell_print(sh, "All motors enabled");
             return 0;
         }
         if (argc >= 3 && strcmp(argv[2], "off") == 0) {
             ctx->conveyor->setEnabled(false);
             ctx->width->setEnabled(false);
-            ctx->table->setEnabled(false);
+            ctx->head->setEnabled(false);
             shell_print(sh, "All motors disabled");
             return 0;
         }

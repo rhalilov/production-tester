@@ -84,29 +84,29 @@ SETTINGS_STATIC_HANDLER_DEFINE(motor_cfg, "mcfg", NULL, motor_params_set, NULL, 
 
 // --- Table positions persistence ---
 
-static config::TablePositions saved_table_pos;
-static bool table_pos_loaded;
+static config::HeadPositions saved_head_pos;
+static bool head_pos_loaded;
 
-static int table_pos_set(const char *name, size_t len,
+static int head_pos_set(const char *name, size_t len,
                          settings_read_cb read_cb, void *cb_arg)
 {
     const char *next;
     if (settings_name_steq(name, "pos", &next) && !next) {
-        if (len != sizeof(saved_table_pos)) return -EINVAL;
-        if (read_cb(cb_arg, &saved_table_pos, sizeof(saved_table_pos)) < 0) return -EINVAL;
-        table_pos_loaded = true;
-        LOG_INF("loaded table positions from flash");
+        if (len != sizeof(saved_head_pos)) return -EINVAL;
+        if (read_cb(cb_arg, &saved_head_pos, sizeof(saved_head_pos)) < 0) return -EINVAL;
+        head_pos_loaded = true;
+        LOG_INF("loaded head positions from flash");
         return 0;
     }
     return -ENOENT;
 }
 
-SETTINGS_STATIC_HANDLER_DEFINE(table_cfg, "tcfg", NULL, table_pos_set, NULL, NULL);
+SETTINGS_STATIC_HANDLER_DEFINE(head_cfg, "tcfg", NULL, head_pos_set, NULL, NULL);
 
 // --- Sensor & Cylinder config persistence ---
 
 struct IoConfig {
-    bool sensor_active_high[10];  // laser1..3, table_home, ind4..ind9
+    bool sensor_active_high[10];  // laser1..3, head_home, ind4..ind9
     uint8_t cyl_sensor_a[3];     // stopper, rfid, locker: index 0..5 = ind4..ind9
     uint8_t cyl_sensor_b[3];
     uint8_t cyl_idle_pos[3];     // 0=POS_A, 1=POS_B (stopper, rfid, locker)
@@ -145,29 +145,29 @@ SETTINGS_STATIC_HANDLER_DEFINE(io_cfg_h, "iocfg", NULL, io_cfg_set, NULL, NULL);
 
 void config_apply_saved(void)
 {
-    if (!params_loaded && !table_pos_loaded && !io_cfg_loaded) return;
+    if (!params_loaded && !head_pos_loaded && !io_cfg_loaded) return;
     auto *ctx = app::context();
     if (!ctx) return;
 
     if (params_loaded) {
-        StepperMotor *motors[] = { ctx->conveyor, ctx->width, ctx->table };
+        StepperMotor *motors[] = { ctx->conveyor, ctx->width, ctx->head };
         for (int i = 0; i < 3; i++) {
             apply_params(i, motors[i]);
         }
         LOG_INF("applied saved motor params");
     }
 
-    if (table_pos_loaded && ctx->recipe) {
-        ctx->recipe->table_pos = saved_table_pos;
-        LOG_INF("applied saved table positions: gc=%.1f pt=%.1f pc=%.1f",
-                (double)saved_table_pos.guides_clear,
-                (double)saved_table_pos.pins_touch,
-                (double)saved_table_pos.pins_contact);
+    if (head_pos_loaded && ctx->recipe) {
+        ctx->recipe->head_pos = saved_head_pos;
+        LOG_INF("applied saved head positions: gc=%.1f pt=%.1f pc=%.1f",
+                (double)saved_head_pos.guides_clear,
+                (double)saved_head_pos.pins_touch,
+                (double)saved_head_pos.pins_contact);
     }
 
     if (io_cfg_loaded) {
         component::Sensor *sensors[] = {
-            ctx->laser1, ctx->laser2, ctx->laser3, ctx->table_home,
+            ctx->laser1, ctx->laser2, ctx->laser3, ctx->head_home,
             ctx->cyl1_a, ctx->cyl1_b, ctx->cyl2_a, ctx->cyl2_b,
             ctx->cyl3_a, ctx->cyl3_b
         };
@@ -209,7 +209,7 @@ static StepperMotor *motor_by_name(const char *name, engine::Context *ctx)
 {
     if (strcmp(name, "conveyor") == 0 || strcmp(name, "1") == 0) return ctx->conveyor;
     if (strcmp(name, "width") == 0 || strcmp(name, "2") == 0) return ctx->width;
-    if (strcmp(name, "table") == 0 || strcmp(name, "3") == 0) return ctx->table;
+    if (strcmp(name, "head") == 0 || strcmp(name, "3") == 0) return ctx->head;
     return nullptr;
 }
 
@@ -217,7 +217,7 @@ static int motor_index(const char *name)
 {
     if (strcmp(name, "conveyor") == 0 || strcmp(name, "1") == 0) return 0;
     if (strcmp(name, "width") == 0 || strcmp(name, "2") == 0) return 1;
-    if (strcmp(name, "table") == 0 || strcmp(name, "3") == 0) return 2;
+    if (strcmp(name, "head") == 0 || strcmp(name, "3") == 0) return 2;
     return -1;
 }
 
@@ -248,12 +248,12 @@ static int cmd_show(const struct shell *sh, size_t argc, char **argv)
 
     print_cfg("1 conveyor", ctx->conveyor);
     print_cfg("2 width", ctx->width);
-    print_cfg("3 table", ctx->table);
+    print_cfg("3 head", ctx->head);
 
     // Table positions
     if (ctx->recipe) {
-        const auto &tp = ctx->recipe->table_pos;
-        shell_print(sh, "[table positions]");
+        const auto &tp = ctx->recipe->head_pos;
+        shell_print(sh, "[head positions]");
         shell_print(sh, "  guides_clear = %.2f mm", (double)tp.guides_clear);
         shell_print(sh, "  pins_touch   = %.2f mm", (double)tp.pins_touch);
         shell_print(sh, "  pins_contact = %.2f mm", (double)tp.pins_contact);
@@ -276,9 +276,9 @@ static int cmd_set(const struct shell *sh, size_t argc, char **argv)
 
     if (argc < 4) {
         shell_print(sh, "usage: cfg set <motor> <param> <value>");
-        shell_print(sh, "  motor: 1|conveyor, 2|width, 3|table");
+        shell_print(sh, "  motor: 1|conveyor, 2|width, 3|head");
         shell_print(sh, "  proc_eng params: home_rpm, safe_pos, accel_start, accel_rate");
-        shell_print(sh, "  proc_eng (table): guides_clear, pins_touch, pins_contact (mm)");
+        shell_print(sh, "  proc_eng (head): guides_clear, pins_touch, pins_contact (mm)");
         shell_print(sh, "  factory params:  invert_dir, steps_per_rev, mm_per_rev,");
         shell_print(sh, "                   limit_min, limit_max, limit_here");
         return -EINVAL;
@@ -364,16 +364,16 @@ static int cmd_set(const struct shell *sh, size_t argc, char **argv)
         shell_print(sh, "accel.accel_rpm_s = %u", cfg->accel.accel_rpm_s);
     } else if (strcmp(param, "guides_clear") == 0) {
         if (!ctx->recipe) { shell_error(sh, "no recipe"); return -EINVAL; }
-        ctx->recipe->table_pos.guides_clear = strtof(val_str, nullptr);
-        shell_print(sh, "table_pos.guides_clear = %.2f mm", (double)ctx->recipe->table_pos.guides_clear);
+        ctx->recipe->head_pos.guides_clear = strtof(val_str, nullptr);
+        shell_print(sh, "head_pos.guides_clear = %.2f mm", (double)ctx->recipe->head_pos.guides_clear);
     } else if (strcmp(param, "pins_touch") == 0) {
         if (!ctx->recipe) { shell_error(sh, "no recipe"); return -EINVAL; }
-        ctx->recipe->table_pos.pins_touch = strtof(val_str, nullptr);
-        shell_print(sh, "table_pos.pins_touch = %.2f mm", (double)ctx->recipe->table_pos.pins_touch);
+        ctx->recipe->head_pos.pins_touch = strtof(val_str, nullptr);
+        shell_print(sh, "head_pos.pins_touch = %.2f mm", (double)ctx->recipe->head_pos.pins_touch);
     } else if (strcmp(param, "pins_contact") == 0) {
         if (!ctx->recipe) { shell_error(sh, "no recipe"); return -EINVAL; }
-        ctx->recipe->table_pos.pins_contact = strtof(val_str, nullptr);
-        shell_print(sh, "table_pos.pins_contact = %.2f mm", (double)ctx->recipe->table_pos.pins_contact);
+        ctx->recipe->head_pos.pins_contact = strtof(val_str, nullptr);
+        shell_print(sh, "head_pos.pins_contact = %.2f mm", (double)ctx->recipe->head_pos.pins_contact);
     } else {
         shell_error(sh, "Unknown param: %s", param);
         return -EINVAL;
@@ -392,7 +392,7 @@ static int cmd_save(const struct shell *sh, size_t argc, char **argv)
         return -EACCES;
     }
 
-    StepperMotor *motors[] = { ctx->conveyor, ctx->width, ctx->table };
+    StepperMotor *motors[] = { ctx->conveyor, ctx->width, ctx->head };
     for (int i = 0; i < 3; i++) {
         snapshot_params(i, motors[i]);
         char key[8];
@@ -405,10 +405,10 @@ static int cmd_save(const struct shell *sh, size_t argc, char **argv)
     }
 
     if (ctx->recipe) {
-        int rc = settings_save_one("tcfg/pos", &ctx->recipe->table_pos,
-                                   sizeof(ctx->recipe->table_pos));
+        int rc = settings_save_one("tcfg/pos", &ctx->recipe->head_pos,
+                                   sizeof(ctx->recipe->head_pos));
         if (rc) {
-            shell_error(sh, "Failed to save table positions: %d", rc);
+            shell_error(sh, "Failed to save head positions: %d", rc);
             return rc;
         }
     }
@@ -417,7 +417,7 @@ static int cmd_save(const struct shell *sh, size_t argc, char **argv)
     {
         IoConfig io;
         component::Sensor *sensors[] = {
-            ctx->laser1, ctx->laser2, ctx->laser3, ctx->table_home,
+            ctx->laser1, ctx->laser2, ctx->laser3, ctx->head_home,
             ctx->cyl1_a, ctx->cyl1_b, ctx->cyl2_a, ctx->cyl2_b,
             ctx->cyl3_a, ctx->cyl3_b
         };
@@ -469,7 +469,7 @@ static int cmd_limit(const struct shell *sh, size_t argc, char **argv)
 
     if (argc < 2) {
         shell_print(sh, "usage: cfg limit <motor> [min|max|here] [mm]");
-        shell_print(sh, "  motor: 1|conveyor, 2|width, 3|table");
+        shell_print(sh, "  motor: 1|conveyor, 2|width, 3|head");
         shell_print(sh, "  cfg limit 3            — show limits");
         shell_print(sh, "  cfg limit 3 min -75    — set min to -75 mm");
         shell_print(sh, "  cfg limit 3 max 0      — set max to 0 mm");
@@ -578,7 +578,7 @@ static int cmd_unlock(const struct shell *sh, size_t argc, char **argv)
             eng->stop();
             ctx->conveyor->stop();
             ctx->width->stop();
-            ctx->table->stop();
+            ctx->head->stop();
             ctx->stopper->off();
             ctx->rfid->off();
             ctx->locker->off();
@@ -607,7 +607,7 @@ static component::Sensor *sensor_by_name(const char *name, engine::Context *ctx)
     if (strcmp(name, "laser1") == 0) return ctx->laser1;
     if (strcmp(name, "laser2") == 0) return ctx->laser2;
     if (strcmp(name, "laser3") == 0) return ctx->laser3;
-    if (strcmp(name, "table_home") == 0) return ctx->table_home;
+    if (strcmp(name, "head_home") == 0) return ctx->head_home;
     if (strcmp(name, "ind6") == 0) return ctx->cyl1_a;
     if (strcmp(name, "ind7") == 0) return ctx->cyl1_b;
     if (strcmp(name, "ind8") == 0) return ctx->cyl2_a;
@@ -625,7 +625,7 @@ static int cmd_sensor(const struct shell *sh, size_t argc, char **argv)
     if (argc < 2) {
         shell_print(sh, "usage: cfg sensor [<name> <active_high 0|1>]");
         shell_print(sh, "  No args: show all polarities");
-        shell_print(sh, "  names: laser1 laser2 laser3 table_home ind4..ind9");
+        shell_print(sh, "  names: laser1 laser2 laser3 head_home ind4..ind9");
         return -EINVAL;
     }
 
@@ -635,7 +635,7 @@ static int cmd_sensor(const struct shell *sh, size_t argc, char **argv)
 
     if (argc < 3) {
         component::Sensor *all[] = {
-            ctx->laser1, ctx->laser2, ctx->laser3, ctx->table_home,
+            ctx->laser1, ctx->laser2, ctx->laser3, ctx->head_home,
             ctx->cyl1_a, ctx->cyl1_b, ctx->cyl2_a, ctx->cyl2_b,
             ctx->cyl3_a, ctx->cyl3_b
         };
@@ -831,7 +831,7 @@ struct __attribute__((packed)) ConfigBlob {
     uint32_t magic;
     uint8_t version;
     MotorParams motors[3];
-    config::TablePositions table_pos;
+    config::HeadPositions head_pos;
     IoConfig io;
     uint32_t crc;
 };
@@ -841,20 +841,20 @@ static void blob_snapshot(ConfigBlob *blob, engine::Context *ctx)
     blob->magic = CONFIG_BLOB_MAGIC;
     blob->version = CONFIG_BLOB_VERSION;
 
-    StepperMotor *motors[] = { ctx->conveyor, ctx->width, ctx->table };
+    StepperMotor *motors[] = { ctx->conveyor, ctx->width, ctx->head };
     for (int i = 0; i < 3; i++) {
         snapshot_params(i, motors[i]);
         blob->motors[i] = params[i];
     }
 
     if (ctx->recipe) {
-        blob->table_pos = ctx->recipe->table_pos;
+        blob->head_pos = ctx->recipe->head_pos;
     } else {
-        memset(&blob->table_pos, 0, sizeof(blob->table_pos));
+        memset(&blob->head_pos, 0, sizeof(blob->head_pos));
     }
 
     component::Sensor *sensors[] = {
-        ctx->laser1, ctx->laser2, ctx->laser3, ctx->table_home,
+        ctx->laser1, ctx->laser2, ctx->laser3, ctx->head_home,
         ctx->cyl1_a, ctx->cyl1_b, ctx->cyl2_a, ctx->cyl2_b,
         ctx->cyl3_a, ctx->cyl3_b
     };
@@ -894,17 +894,17 @@ static void blob_apply(const ConfigBlob *blob, engine::Context *ctx)
     for (int i = 0; i < 3; i++) {
         params[i] = blob->motors[i];
     }
-    StepperMotor *motors[] = { ctx->conveyor, ctx->width, ctx->table };
+    StepperMotor *motors[] = { ctx->conveyor, ctx->width, ctx->head };
     for (int i = 0; i < 3; i++) {
         apply_params(i, motors[i]);
     }
 
     if (ctx->recipe) {
-        ctx->recipe->table_pos = blob->table_pos;
+        ctx->recipe->head_pos = blob->head_pos;
     }
 
     component::Sensor *sensors[] = {
-        ctx->laser1, ctx->laser2, ctx->laser3, ctx->table_home,
+        ctx->laser1, ctx->laser2, ctx->laser3, ctx->head_home,
         ctx->cyl1_a, ctx->cyl1_b, ctx->cyl2_a, ctx->cyl2_b,
         ctx->cyl3_a, ctx->cyl3_b
     };
@@ -934,7 +934,7 @@ static void blob_apply(const ConfigBlob *blob, engine::Context *ctx)
 
 static const char *motor_names[] = { "motor1", "motor2", "motor3" };
 static const char *sensor_names_all[] = {
-    "laser1", "laser2", "laser3", "table_home",
+    "laser1", "laser2", "laser3", "head_home",
     "ind4", "ind5", "ind6", "ind7", "ind8", "ind9"
 };
 
@@ -973,9 +973,9 @@ static int cmd_dump(const struct shell *sh, size_t argc, char **argv)
         shell_print(sh, "%s.accel_rate=%u", motor_names[i], blob.motors[i].accel_rpm_s);
         shell_print(sh, "%s.invert=%d", motor_names[i], blob.motors[i].invert_dir ? 1 : 0);
     }
-    shell_print(sh, "table.guides_clear=%.2f", (double)blob.table_pos.guides_clear);
-    shell_print(sh, "table.pins_touch=%.2f", (double)blob.table_pos.pins_touch);
-    shell_print(sh, "table.pins_contact=%.2f", (double)blob.table_pos.pins_contact);
+    shell_print(sh, "head.guides_clear=%.2f", (double)blob.head_pos.guides_clear);
+    shell_print(sh, "head.pins_touch=%.2f", (double)blob.head_pos.pins_touch);
+    shell_print(sh, "head.pins_contact=%.2f", (double)blob.head_pos.pins_contact);
     for (int i = 0; i < 10; i++) {
         shell_print(sh, "sensor.%s=%d", sensor_names_all[i],
                     blob.io.sensor_active_high[i] ? 1 : 0);
@@ -1020,7 +1020,7 @@ static int parse_config_line(const char *line, engine::Context *ctx)
         const char *field = key + plen;
 
         auto *cfg = const_cast<StepperMotorConfig *>(
-            &((StepperMotor *[]){ctx->conveyor, ctx->width, ctx->table})[i]->config());
+            &((StepperMotor *[]){ctx->conveyor, ctx->width, ctx->head})[i]->config());
 
         if (strcmp(field, "home_rpm") == 0) cfg->home_rpm = atoi(val);
         else if (strcmp(field, "limit_min") == 0) cfg->soft_limit_min = atoi(val);
@@ -1033,11 +1033,11 @@ static int parse_config_line(const char *line, engine::Context *ctx)
         return 0;
     }
 
-    if (strncmp(key, "table.", 6) == 0 && ctx->recipe) {
-        const char *field = key + 6;
-        if (strcmp(field, "guides_clear") == 0) ctx->recipe->table_pos.guides_clear = strtof(val, nullptr);
-        else if (strcmp(field, "pins_touch") == 0) ctx->recipe->table_pos.pins_touch = strtof(val, nullptr);
-        else if (strcmp(field, "pins_contact") == 0) ctx->recipe->table_pos.pins_contact = strtof(val, nullptr);
+    if (strncmp(key, "head.", 5) == 0 && ctx->recipe) {
+        const char *field = key + 5;
+        if (strcmp(field, "guides_clear") == 0) ctx->recipe->head_pos.guides_clear = strtof(val, nullptr);
+        else if (strcmp(field, "pins_touch") == 0) ctx->recipe->head_pos.pins_touch = strtof(val, nullptr);
+        else if (strcmp(field, "pins_contact") == 0) ctx->recipe->head_pos.pins_contact = strtof(val, nullptr);
         else return -EINVAL;
         return 0;
     }
@@ -1045,7 +1045,7 @@ static int parse_config_line(const char *line, engine::Context *ctx)
     if (strncmp(key, "sensor.", 7) == 0) {
         const char *name = key + 7;
         component::Sensor *sensors[] = {
-            ctx->laser1, ctx->laser2, ctx->laser3, ctx->table_home,
+            ctx->laser1, ctx->laser2, ctx->laser3, ctx->head_home,
             ctx->cyl1_a, ctx->cyl1_b, ctx->cyl2_a, ctx->cyl2_b,
             ctx->cyl3_a, ctx->cyl3_b
         };
@@ -1235,7 +1235,7 @@ static int cmd_flash_blob(const struct shell *sh, size_t argc, char **argv)
 
 void config_try_blob_fallback(void)
 {
-    if (params_loaded || table_pos_loaded || io_cfg_loaded) {
+    if (params_loaded || head_pos_loaded || io_cfg_loaded) {
         return;
     }
 

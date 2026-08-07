@@ -45,10 +45,10 @@ static int cmd_status(const struct shell *sh, size_t argc, char **argv)
                 ctx->width->isHomed() ? "yes" : "no",
                 ctx->width->inAlarm() ? "ALM!" : "ok");
     shell_print(sh, "  Table:    pos=%d moving=%s homed=%s alm=%s",
-                ctx->table->position(),
-                ctx->table->isMoving() ? "YES" : "no",
-                ctx->table->isHomed() ? "yes" : "no",
-                ctx->table->inAlarm() ? "ALM!" : "ok");
+                ctx->head->position(),
+                ctx->head->isMoving() ? "YES" : "no",
+                ctx->head->isHomed() ? "yes" : "no",
+                ctx->head->inAlarm() ? "ALM!" : "ok");
     shell_print(sh, "");
     shell_print(sh, "=== Cylinders ===");
     const char *posnames[] = { "A", "B", "?" };
@@ -66,7 +66,7 @@ static int cmd_sensors(const struct shell *sh, size_t argc, char **argv)
 
     // Force a fresh physical read by polling
     component::Sensor *all[] = {
-        ctx->laser1, ctx->laser2, ctx->laser3, ctx->table_home,
+        ctx->laser1, ctx->laser2, ctx->laser3, ctx->head_home,
         ctx->cyl1_a, ctx->cyl1_b, ctx->cyl2_a, ctx->cyl2_b,
         ctx->cyl3_a, ctx->cyl3_b
     };
@@ -76,7 +76,7 @@ static int cmd_sensors(const struct shell *sh, size_t argc, char **argv)
     shell_print(sh, "%-12s %s", "laser1", ctx->laser1->raw() ? "CLOSED" : "open");
     shell_print(sh, "%-12s %s", "laser2", ctx->laser2->raw() ? "CLOSED" : "open");
     shell_print(sh, "%-12s %s", "laser3", ctx->laser3->raw() ? "CLOSED" : "open");
-    shell_print(sh, "%-12s %s", "table_home", ctx->table_home->raw() ? "CLOSED" : "open");
+    shell_print(sh, "%-12s %s", "head_home", ctx->head_home->raw() ? "CLOSED" : "open");
     shell_print(sh, "");
     shell_print(sh, "=== Inductive Sensors ===");
     shell_print(sh, "%-12s %s", "ind6", ctx->cyl1_a->raw() ? "CLOSED" : "open");
@@ -89,7 +89,7 @@ static int cmd_sensors(const struct shell *sh, size_t argc, char **argv)
     shell_print(sh, "=== Motor ALM ===");
     shell_print(sh, "  Conveyor: %s", ctx->conveyor->inAlarm() ? "ALM!" : "ok");
     shell_print(sh, "  Width:    %s", ctx->width->inAlarm() ? "ALM!" : "ok");
-    shell_print(sh, "  Table:    %s", ctx->table->inAlarm() ? "ALM!" : "ok");
+    shell_print(sh, "  Head:     %s", ctx->head->inAlarm() ? "ALM!" : "ok");
     shell_print(sh, "");
     shell_print(sh, "=== SMEMA ===");
     shell_print(sh, "  Up BA (in):  %s", ctx->smema->boardAvailableIn() ? "HIGH" : "low");
@@ -127,13 +127,13 @@ static int cmd_pos(const struct shell *sh, size_t argc, char **argv)
 
     print_motor("1 Conveyor", ctx->conveyor);
     print_motor("2 Width", ctx->width);
-    print_motor("3 Table", ctx->table);
+    print_motor("3 Head", ctx->head);
 
     shell_print(sh, "");
-    float lim_mm = (float)ctx->table->config().soft_limit_min * 5.0f / (float)ctx->table->config().steps_per_rev;
+    float lim_mm = (float)ctx->head->config().soft_limit_min * 5.0f / (float)ctx->head->config().steps_per_rev;
     shell_print(sh, "  Table soft limits: min=%d (%.2f mm) max=%d",
-                ctx->table->config().soft_limit_min, (double)lim_mm,
-                ctx->table->config().soft_limit_max);
+                ctx->head->config().soft_limit_min, (double)lim_mm,
+                ctx->head->config().soft_limit_max);
     return 0;
 }
 

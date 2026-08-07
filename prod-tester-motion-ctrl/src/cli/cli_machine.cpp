@@ -49,7 +49,7 @@ static int cmd_start(const struct shell *sh, size_t argc, char **argv)
     int start_step = detect_start_step(ctx);
 
     ctx->conveyor->setEnabled(true);
-    ctx->table->setEnabled(true);
+    ctx->head->setEnabled(true);
 
     // SFC on_entry handles Machine Ready and conveyor at the appropriate step
 
@@ -77,7 +77,7 @@ static int cmd_stop(const struct shell *sh, size_t argc, char **argv)
 
     ctx->conveyor->stop();
     ctx->width->stop();
-    ctx->table->stop();
+    ctx->head->stop();
     ctx->stopper->off();
     ctx->rfid->off();
     ctx->locker->off();
@@ -98,7 +98,7 @@ static int cmd_abort(const struct shell *sh, size_t argc, char **argv)
 
     ctx->conveyor->emergencyStop();
     ctx->width->emergencyStop();
-    ctx->table->emergencyStop();
+    ctx->head->emergencyStop();
     ctx->stopper->off();
     ctx->rfid->off();
     ctx->locker->off();
@@ -117,7 +117,7 @@ static int cmd_reset(const struct shell *sh, size_t argc, char **argv)
     eng->faults().reset();
     ctx->conveyor->clearAlarm();
     ctx->width->clearAlarm();
-    ctx->table->clearAlarm();
+    ctx->head->clearAlarm();
 
     shell_print(sh, "OK — fault cleared. Run 'mc start' to resume.");
     return 0;
@@ -273,25 +273,25 @@ static int cmd_unload(const struct shell *sh, size_t argc, char **argv)
         return -EBUSY;
     }
 
-    if (!ctx->table->isHomed()) {
+    if (!ctx->head->isHomed()) {
         shell_error(sh, "Table not homed — run 'mc home' first");
         return -EINVAL;
     }
 
-    const auto &tpos = ctx->recipe->table_pos;
-    int32_t pos_pins_touch = ctx->table->mmToSteps(tpos.pins_touch);
-    int32_t pos_guides_clear = ctx->table->mmToSteps(tpos.guides_clear);
-    int32_t cur_pos = ctx->table->position();
+    const auto &tpos = ctx->recipe->head_pos;
+    int32_t pos_pins_touch = ctx->head->mmToSteps(tpos.pins_touch);
+    int32_t pos_guides_clear = ctx->head->mmToSteps(tpos.guides_clear);
+    int32_t cur_pos = ctx->head->position();
     uint32_t up_rpm = ctx->recipe->motor_presets[0].rpm;
 
-    ctx->table->setEnabled(true);
+    ctx->head->setEnabled(true);
     ctx->conveyor->setEnabled(true);
 
     // Phase 1: If below pins_touch (at contact), raise to pins_touch
     if (cur_pos < pos_pins_touch) {
         shell_print(sh, "Raising to pins_touch...");
-        ctx->table->goTo(pos_pins_touch, ctx->recipe->motor_presets[4].rpm);
-        if (!wait_motor_done(ctx->table, 15000)) {
+        ctx->head->goTo(pos_pins_touch, ctx->recipe->motor_presets[4].rpm);
+        if (!wait_motor_done(ctx->head, 15000)) {
             shell_error(sh, "Timeout raising to pins_touch");
             return -ETIMEDOUT;
         }
@@ -304,11 +304,11 @@ static int cmd_unload(const struct shell *sh, size_t argc, char **argv)
     }
 
     // Phase 3: Raise to guides_clear
-    cur_pos = ctx->table->position();
+    cur_pos = ctx->head->position();
     if (cur_pos < pos_guides_clear) {
         shell_print(sh, "Raising to guides_clear...");
-        ctx->table->goTo(pos_guides_clear, up_rpm);
-        if (!wait_motor_done(ctx->table, 15000)) {
+        ctx->head->goTo(pos_guides_clear, up_rpm);
+        if (!wait_motor_done(ctx->head, 15000)) {
             shell_error(sh, "Timeout raising to guides_clear");
             return -ETIMEDOUT;
         }
@@ -380,14 +380,14 @@ static int cmd_home(const struct shell *sh, size_t argc, char **argv)
         return -EBUSY;
     }
 
-    ctx->table->setEnabled(true);
-    shell_print(sh, "Homing table...");
-    int err = ctx->table->home();
+    ctx->head->setEnabled(true);
+    shell_print(sh, "Homing head...");
+    int err = ctx->head->home();
     if (err) {
         shell_error(sh, "Home failed: %d", err);
         return err;
     }
-    shell_print(sh, "OK — table homed (position=0)");
+    shell_print(sh, "OK — head homed (position=0)");
     return 0;
 }
 
@@ -442,7 +442,7 @@ SHELL_STATIC_SUBCMD_SET_CREATE(machine_cmds,
     SHELL_CMD(load, NULL, "Load panel (conveyor to laser2)", cmd_load),
     SHELL_CMD(unload, NULL, "Unload panel (conveyor to laser3)", cmd_unload),
     SHELL_CMD(eject, NULL, "Eject panel (run until laser3 clears)", cmd_eject),
-    SHELL_CMD(home, NULL, "Home table motor", cmd_home),
+    SHELL_CMD(home, NULL, "Home head motor", cmd_home),
     SHELL_SUBCMD_SET_END
 );
 

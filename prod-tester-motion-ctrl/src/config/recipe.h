@@ -4,7 +4,7 @@
 
 namespace config {
 
-struct TablePositions {
+struct HeadPositions {
     float guides_clear;     // mm from home — guides out of board
     float pins_touch;       // mm from home — probes just touching
     float pins_contact;     // mm from home — full contact (test)
@@ -23,8 +23,8 @@ struct Recipe {
     };
     MotorPreset motor_presets[7];
 
-    // Named table positions (absolute mm from home, negative = down)
-    TablePositions table_pos;
+    // Named head positions (absolute mm from home, negative = down)
+    HeadPositions head_pos;
 
     // Cylinder timeout
     uint32_t cylinder_timeout_ms;

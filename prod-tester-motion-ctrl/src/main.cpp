@@ -98,20 +98,20 @@ int main(void)
         }
     }
 
-    // Auto-home table (after settings are applied)
-    if (machine_context.table && machine_context.table->config().auto_home) {
-        LOG_INF("Auto-homing table with home_rpm=%u...",
-                machine_context.table->config().home_rpm);
-        machine_context.table->setEnabled(true);
-        err = machine_context.table->home();
+    // Auto-home head (after settings are applied)
+    if (machine_context.head && machine_context.head->config().auto_home) {
+        LOG_INF("Auto-homing head with home_rpm=%u...",
+                machine_context.head->config().home_rpm);
+        machine_context.head->setEnabled(true);
+        err = machine_context.head->home();
         if (err) {
-            LOG_ERR("table home failed: %d", err);
+            LOG_ERR("head home failed: %d", err);
         }
     }
 
     LOG_INF("Auto-starting sequence...");
     machine_context.conveyor->setEnabled(true);
-    machine_context.table->setEnabled(true);
+    machine_context.head->setEnabled(true);
     sfc_engine.setMode(engine::OperatingMode::AUTO);
     sfc_engine.start();
     app::startScan();

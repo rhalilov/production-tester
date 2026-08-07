@@ -15,7 +15,7 @@ struct Context {
     // Components
     component::StepperMotor *conveyor;      // axis1
     component::StepperMotor *width;         // axis2
-    component::StepperMotor *table;         // axis3 (dual motor)
+    component::StepperMotor *head;          // axis3 (dual motor)
 
     component::Cylinder *stopper;           // solenoid 1
     component::Cylinder *rfid;              // solenoid 2
@@ -36,8 +36,8 @@ struct Context {
     component::Sensor *cyl3_a;
     component::Sensor *cyl3_b;
 
-    // Table home sensor
-    component::Sensor *table_home;
+    // Head home sensor
+    component::Sensor *head_home;
 
     // Active recipe
     config::Recipe *recipe;
