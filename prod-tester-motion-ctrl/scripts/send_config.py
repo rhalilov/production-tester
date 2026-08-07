@@ -242,8 +242,11 @@ def _get_key():
     return ch.decode(errors="replace")
 
 
-def _print_header(title):
+def _print_header(title, path=None):
     print(f"\n{'='*50}")
+    if path:
+        print(f"  {path}")
+        print(f"{'─'*50}")
     print(f"  {title}")
     print(f"{'='*50}\n")
 
@@ -398,13 +401,13 @@ def _read_current_values(ser, node_idx):
     return result
 
 
-def _show_motor_params(ser, node_idx, params):
+def _show_motor_params(ser, node_idx, params, level_name):
     """Display motor parameters and allow editing."""
     while True:
         cfg_data = _read_current_values(ser, node_idx)
         _clear_screen()
         node_name = NODES[node_idx][0]
-        _print_header(f"{node_name} Parameters")
+        _print_header(f"{node_name} Parameters", f"{level_name} / {node_name}")
 
         for i, (name, cmd, step, unit) in enumerate(params):
             val = _get_current_value(cfg_data, name, cmd, unit)
@@ -426,23 +429,24 @@ def _show_motor_params(ser, node_idx, params):
         if key and key.isdigit():
             idx = int(key) - 1
             if 0 <= idx < len(params):
-                _adjust_param(ser, params[idx], node_idx)
+                _adjust_param(ser, params[idx], node_idx, level_name)
 
 
-def _adjust_param(ser, param_def, node_idx):
+def _adjust_param(ser, param_def, node_idx, level_name):
     """Adjust a single parameter: direct value or < / > stepping."""
     name, cmd_template, step, unit = param_def
     base_cmd = cmd_template.split("{v}")[0].strip()
     motor = _motor_from_cmd(base_cmd)
     mpr = MM_PER_REV.get(motor, 0)
     is_linear = unit in ("mm/min", "mm/min/s") and mpr > 0
+    node_name = NODES[node_idx][0]
 
     while True:
         cfg_data = _read_current_values(ser, node_idx)
         current = _get_current_value(cfg_data, name, cmd_template, unit)
 
         _clear_screen()
-        _print_header(f"Adjust: {name}")
+        _print_header(f"Adjust: {name}", f"{level_name} / {node_name} / {name}")
         print(f"  Current value: {current} {unit}")
         print(f"  Step size:     {step} {unit}")
         print()
@@ -515,12 +519,12 @@ def _adjust_param(ser, param_def, node_idx):
                     time.sleep(1)
 
 
-def _show_sensors(ser):
+def _show_sensors(ser, level_name):
     """Show and configure sensor polarities."""
     while True:
         lines = send_and_capture(ser, "cfg sensor", timeout=2.0)
         _clear_screen()
-        _print_header("Sensor Polarity")
+        _print_header("Sensor Polarity", f"{level_name} / Sensors")
 
         sensor_states = {}
         for line in lines:
@@ -557,11 +561,11 @@ def _show_sensors(ser):
                 send_and_capture(ser, f"cfg sensor {name} {new_val}")
 
 
-def _show_cylinders(ser):
+def _show_cylinders(ser, level_name):
     """Show and configure cylinder settings."""
     while True:
         _clear_screen()
-        _print_header("Cylinder Configuration")
+        _print_header("Cylinder Configuration", f"{level_name} / Cylinders")
 
         lines = send_and_capture(ser, "cfg cylinder read", timeout=2.0)
         for i, line in enumerate(lines):
@@ -588,12 +592,12 @@ def _show_cylinders(ser):
                     time.sleep(1)
 
 
-def _show_smema(ser):
+def _show_smema(ser, level_name):
     """SMEMA diagnostics and manual control."""
     while True:
         lines = send_and_capture(ser, "manual smema", timeout=1.5)
         _clear_screen()
-        _print_header("SMEMA Control")
+        _print_header("SMEMA Control", f"{level_name} / SMEMA")
 
         for line in lines:
             if "Current state" in line or "Up BA" in line or "Down MR" in line:
@@ -651,15 +655,17 @@ def _setup_menu_inner(ser):
 
     if key == '1':
         send_and_capture(ser, "cfg unlock proc_eng")
+        level_name = "Engineering"
     elif key == '2':
         send_and_capture(ser, "cfg unlock factory")
+        level_name = "Factory"
     else:
         return
 
     # Node selection loop
     while True:
         _clear_screen()
-        _print_header("Select Node")
+        _print_header("Select Node", level_name)
         for i, (name, _) in enumerate(NODES):
             print(f"  {i+1}. {name}")
         print("\n  [s] Save to flash")
@@ -678,17 +684,17 @@ def _setup_menu_inner(ser):
         if key and key.isdigit():
             idx = int(key) - 1
             if idx == 0:
-                _show_motor_params(ser, 0, CONVEYOR_PARAMS)
+                _show_motor_params(ser, 0, CONVEYOR_PARAMS, level_name)
             elif idx == 1:
-                _show_motor_params(ser, 1, TABLE_PARAMS)
+                _show_motor_params(ser, 1, HEAD_PARAMS, level_name)
             elif idx == 2:
-                _show_motor_params(ser, 2, WIDTH_PARAMS)
+                _show_motor_params(ser, 2, WIDTH_PARAMS, level_name)
             elif idx == 3:
-                _show_sensors(ser)
+                _show_sensors(ser, level_name)
             elif idx == 4:
-                _show_cylinders(ser)
+                _show_cylinders(ser, level_name)
             elif idx == 5:
-                _show_smema(ser)
+                _show_smema(ser, level_name)
 
 
 def connect_mode(host, port, config_file, delay_ms):
