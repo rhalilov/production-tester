@@ -45,9 +45,9 @@ static StepperMotor *get_motor(const struct shell *sh, const char *arg)
 
     int n = atoi(arg);
     switch (n) {
-    case 1: return ctx->conveyor;
-    case 2: return ctx->width;
-    case 3: return ctx->head;
+    case 1: return ctx->conveyor->beltMotor();
+    case 2: return ctx->conveyor->widthMotor();
+    case 3: return ctx->head->motor();
     default:
         shell_error(sh, "Motor %d not found (1-3)", n);
         return nullptr;
@@ -95,16 +95,16 @@ static int cmd_motor(const struct shell *sh, size_t argc, char **argv)
     if (strcmp(argv[1], "all") == 0) {
         auto *ctx = app::context();
         if (argc >= 3 && strcmp(argv[2], "on") == 0) {
-            ctx->conveyor->setEnabled(true);
-            ctx->width->setEnabled(true);
-            ctx->head->setEnabled(true);
+            ctx->conveyor->beltMotor()->setEnabled(true);
+            ctx->conveyor->widthMotor()->setEnabled(true);
+            ctx->head->motor()->setEnabled(true);
             shell_print(sh, "All motors enabled");
             return 0;
         }
         if (argc >= 3 && strcmp(argv[2], "off") == 0) {
-            ctx->conveyor->setEnabled(false);
-            ctx->width->setEnabled(false);
-            ctx->head->setEnabled(false);
+            ctx->conveyor->beltMotor()->setEnabled(false);
+            ctx->conveyor->widthMotor()->setEnabled(false);
+            ctx->head->motor()->setEnabled(false);
             shell_print(sh, "All motors disabled");
             return 0;
         }
@@ -190,7 +190,12 @@ static int cmd_motor(const struct shell *sh, size_t argc, char **argv)
             shell_error(sh, "usage: manual motor %s go_mm <mm> <rpm>", argv[1]);
             return -EINVAL;
         }
-        float mm_per_rev = motor->config().mm_per_rev;
+        float mm_per_rev = 0;
+        int n = atoi(argv[1]);
+        auto *ctx = app::context();
+        if (n == 1) mm_per_rev = ctx->conveyor->config().belt_mm_per_rev;
+        else if (n == 2) mm_per_rev = ctx->conveyor->config().width_mm_per_rev;
+        else if (n == 3) mm_per_rev = ctx->head->config().mm_per_rev;
         if (mm_per_rev <= 0) {
             shell_error(sh, "Motor %s has no mm_per_rev configured", argv[1]);
             return -EINVAL;
@@ -266,7 +271,7 @@ static int cmd_cylinder(const struct shell *sh, size_t argc, char **argv)
 static int cmd_smema(const struct shell *sh, size_t argc, char **argv)
 {
     auto *ctx = app::context();
-    if (!ctx || !ctx->smema) { shell_error(sh, "not init"); return -EINVAL; }
+    if (!ctx || !ctx->conveyor) { shell_error(sh, "not init"); return -EINVAL; }
 
     if (argc < 2) {
         shell_print(sh, "usage: manual smema <mr_out|ba_out|ba_fail_out|off> [0|1]");
@@ -275,13 +280,14 @@ static int cmd_smema(const struct shell *sh, size_t argc, char **argv)
         shell_print(sh, "  ba_fail_out <0|1>   — Board Available NG to downstream");
         shell_print(sh, "  off                 — all outputs LOW");
         shell_print(sh, "Current state:");
-        shell_print(sh, "  Up BA (in):   %s", ctx->smema->boardAvailableIn() ? "HIGH" : "LOW");
-        shell_print(sh, "  Down MR (in): %s", ctx->smema->machineReadyIn() ? "HIGH" : "LOW");
+        shell_print(sh, "  Up BA (in):   %s", ctx->conveyor->upstream()->boardAvailable() ? "HIGH" : "LOW");
+        shell_print(sh, "  Down MR (in): %s", ctx->conveyor->downstream()->machineReady() ? "HIGH" : "LOW");
         return -EINVAL;
     }
 
     if (strcmp(argv[1], "off") == 0) {
-        ctx->smema->allOff();
+        ctx->conveyor->upstream()->setMachineReady(false);
+        ctx->conveyor->downstream()->allOff();
         shell_print(sh, "SMEMA all outputs LOW");
         return 0;
     }
@@ -294,13 +300,13 @@ static int cmd_smema(const struct shell *sh, size_t argc, char **argv)
     bool val = (atoi(argv[2]) != 0);
 
     if (strcmp(argv[1], "mr_out") == 0) {
-        ctx->smema->setMachineReadyOut(val);
+        ctx->conveyor->upstream()->setMachineReady(val);
         shell_print(sh, "SMEMA MR_OUT = %s", val ? "HIGH" : "LOW");
     } else if (strcmp(argv[1], "ba_out") == 0) {
-        ctx->smema->setBoardAvailableOut(val);
+        ctx->conveyor->downstream()->setBoardAvailable(val);
         shell_print(sh, "SMEMA BA_OUT = %s", val ? "HIGH" : "LOW");
     } else if (strcmp(argv[1], "ba_fail_out") == 0) {
-        ctx->smema->setBoardAvailableFailOut(val);
+        ctx->conveyor->downstream()->setBoardAvailableFail(val);
         shell_print(sh, "SMEMA BA_FAIL_OUT = %s", val ? "HIGH" : "LOW");
     } else {
         shell_error(sh, "Unknown: %s (mr_out|ba_out|ba_fail_out|off)", argv[1]);

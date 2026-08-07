@@ -14,18 +14,18 @@ LOG_MODULE_REGISTER(cli_machine, LOG_LEVEL_INF);
 
 static int detect_start_step(engine::Context *ctx)
 {
-    ctx->laser1->poll();
-    ctx->laser2->poll();
-    ctx->laser3->poll();
+    ctx->conveyor->laser1()->poll();
+    ctx->conveyor->laser2()->poll();
+    ctx->conveyor->laser3()->poll();
 
     // laser2 has priority — board is at work position
-    if (ctx->laser2->raw()) {
+    if (ctx->conveyor->laser2()->raw()) {
         return 4;   // arm_stopper (board at work position)
     }
-    if (ctx->laser3->raw()) {
+    if (ctx->conveyor->laser3()->raw()) {
         return 17;  // eject (board at exit)
     }
-    if (ctx->laser1->raw()) {
+    if (ctx->conveyor->laser1()->raw()) {
         return 2;   // wait_panel (board entering)
     }
     return 0;       // idle
@@ -48,8 +48,8 @@ static int cmd_start(const struct shell *sh, size_t argc, char **argv)
 
     int start_step = detect_start_step(ctx);
 
-    ctx->conveyor->setEnabled(true);
-    ctx->head->setEnabled(true);
+    ctx->conveyor->beltMotor()->setEnabled(true);
+    ctx->head->motor()->setEnabled(true);
 
     // SFC on_entry handles Machine Ready and conveyor at the appropriate step
 
@@ -75,9 +75,9 @@ static int cmd_stop(const struct shell *sh, size_t argc, char **argv)
     app::stopScan();
     eng->stop();
 
-    ctx->conveyor->stop();
-    ctx->width->stop();
-    ctx->head->stop();
+    ctx->conveyor->beltMotor()->stop();
+    ctx->conveyor->widthMotor()->stop();
+    ctx->head->motor()->stop();
     ctx->stopper->off();
     ctx->rfid->off();
     ctx->locker->off();
@@ -96,13 +96,14 @@ static int cmd_abort(const struct shell *sh, size_t argc, char **argv)
     eng->stop();
     eng->faults().raise("operator abort");
 
-    ctx->conveyor->emergencyStop();
-    ctx->width->emergencyStop();
-    ctx->head->emergencyStop();
+    ctx->conveyor->beltMotor()->emergencyStop();
+    ctx->conveyor->widthMotor()->emergencyStop();
+    ctx->head->motor()->emergencyStop();
     ctx->stopper->off();
     ctx->rfid->off();
     ctx->locker->off();
-    ctx->smema->allOff();
+    ctx->conveyor->upstream()->setMachineReady(false);
+    ctx->conveyor->downstream()->allOff();
 
     shell_print(sh, "ABORTED — all motion stopped, fault latched");
     return 0;
@@ -115,9 +116,9 @@ static int cmd_reset(const struct shell *sh, size_t argc, char **argv)
     if (!eng) { shell_error(sh, "not init"); return -EINVAL; }
 
     eng->faults().reset();
-    ctx->conveyor->clearAlarm();
-    ctx->width->clearAlarm();
-    ctx->head->clearAlarm();
+    ctx->conveyor->beltMotor()->clearAlarm();
+    ctx->conveyor->widthMotor()->clearAlarm();
+    ctx->head->motor()->clearAlarm();
 
     shell_print(sh, "OK — fault cleared. Run 'mc start' to resume.");
     return 0;
@@ -226,27 +227,27 @@ static int cmd_load(const struct shell *sh, size_t argc, char **argv)
         return -EBUSY;
     }
 
-    ctx->laser2->poll();
-    if (ctx->laser2->raw()) {
+    ctx->conveyor->laser2()->poll();
+    if (ctx->conveyor->laser2()->raw()) {
         shell_print(sh, "Panel already at position (laser2 active)");
         return 0;
     }
 
-    ctx->conveyor->setEnabled(true);
+    ctx->conveyor->beltMotor()->setEnabled(true);
 
     shell_print(sh, "Waiting for panel at infeed (laser1)...");
-    if (!wait_sensor(ctx->laser1, true, 0)) return -EINTR;
+    if (!wait_sensor(ctx->conveyor->laser1(), true, 0)) return -EINTR;
     shell_print(sh, "Panel detected. Conveyor running...");
 
-    ctx->conveyor->run(30, component::MotionDir::POS);
+    ctx->conveyor->beltMotor()->run(30, component::MotionDir::POS);
 
     shell_print(sh, "Waiting for panel near (laser2)...");
-    if (!wait_sensor(ctx->laser2, true, 30000)) {
-        ctx->conveyor->stop();
+    if (!wait_sensor(ctx->conveyor->laser2(), true, 30000)) {
+        ctx->conveyor->beltMotor()->stop();
         shell_error(sh, "Timeout waiting for laser2");
         return -ETIMEDOUT;
     }
-    ctx->conveyor->stop();
+    ctx->conveyor->beltMotor()->stop();
     shell_print(sh, "OK — panel loaded (at laser2)");
     return 0;
 }
@@ -281,17 +282,17 @@ static int cmd_unload(const struct shell *sh, size_t argc, char **argv)
     const auto &tpos = ctx->recipe->head_pos;
     int32_t pos_pins_touch = ctx->head->mmToSteps(tpos.pins_touch);
     int32_t pos_guides_clear = ctx->head->mmToSteps(tpos.guides_clear);
-    int32_t cur_pos = ctx->head->position();
+    int32_t cur_pos = ctx->head->motor()->position();
     uint32_t up_rpm = ctx->recipe->motor_presets[0].rpm;
 
-    ctx->head->setEnabled(true);
-    ctx->conveyor->setEnabled(true);
+    ctx->head->motor()->setEnabled(true);
+    ctx->conveyor->beltMotor()->setEnabled(true);
 
     // Phase 1: If below pins_touch (at contact), raise to pins_touch
     if (cur_pos < pos_pins_touch) {
         shell_print(sh, "Raising to pins_touch...");
-        ctx->head->goTo(pos_pins_touch, ctx->recipe->motor_presets[4].rpm);
-        if (!wait_motor_done(ctx->head, 15000)) {
+        ctx->head->motor()->goTo(pos_pins_touch, ctx->recipe->motor_presets[4].rpm);
+        if (!wait_motor_done(ctx->head->motor(), 15000)) {
             shell_error(sh, "Timeout raising to pins_touch");
             return -ETIMEDOUT;
         }
@@ -304,11 +305,11 @@ static int cmd_unload(const struct shell *sh, size_t argc, char **argv)
     }
 
     // Phase 3: Raise to guides_clear
-    cur_pos = ctx->head->position();
+    cur_pos = ctx->head->motor()->position();
     if (cur_pos < pos_guides_clear) {
         shell_print(sh, "Raising to guides_clear...");
-        ctx->head->goTo(pos_guides_clear, up_rpm);
-        if (!wait_motor_done(ctx->head, 15000)) {
+        ctx->head->motor()->goTo(pos_guides_clear, up_rpm);
+        if (!wait_motor_done(ctx->head->motor(), 15000)) {
             shell_error(sh, "Timeout raising to guides_clear");
             return -ETIMEDOUT;
         }
@@ -328,15 +329,15 @@ static int cmd_unload(const struct shell *sh, size_t argc, char **argv)
 
     // Phase 6: Convey out + eject
     shell_print(sh, "Conveying out...");
-    ctx->conveyor->run(ctx->recipe->motor_presets[5].rpm, component::MotionDir::POS);
+    ctx->conveyor->beltMotor()->run(ctx->recipe->motor_presets[5].rpm, component::MotionDir::POS);
 
-    wait_sensor(ctx->laser3, true, 5000);
-    if (!wait_sensor(ctx->laser3, false, 30000)) {
-        ctx->conveyor->stop();
+    wait_sensor(ctx->conveyor->laser3(), true, 5000);
+    if (!wait_sensor(ctx->conveyor->laser3(), false, 30000)) {
+        ctx->conveyor->beltMotor()->stop();
         shell_error(sh, "Timeout — panel didn't clear laser3");
         return -ETIMEDOUT;
     }
-    ctx->conveyor->stop();
+    ctx->conveyor->beltMotor()->stop();
     shell_print(sh, "OK — panel ejected");
     return 0;
 }
@@ -352,19 +353,19 @@ static int cmd_eject(const struct shell *sh, size_t argc, char **argv)
         return -EBUSY;
     }
 
-    ctx->conveyor->setEnabled(true);
-    ctx->conveyor->run(40, component::MotionDir::POS);
+    ctx->conveyor->beltMotor()->setEnabled(true);
+    ctx->conveyor->beltMotor()->run(40, component::MotionDir::POS);
     shell_print(sh, "Ejecting panel. Waiting for laser3 to open...");
 
     // Wait for laser3 to be triggered first (panel there)
-    wait_sensor(ctx->laser3, true, 5000);
+    wait_sensor(ctx->conveyor->laser3(), true, 5000);
     // Now wait for it to open (panel passed)
-    if (!wait_sensor(ctx->laser3, false, 30000)) {
-        ctx->conveyor->stop();
+    if (!wait_sensor(ctx->conveyor->laser3(), false, 30000)) {
+        ctx->conveyor->beltMotor()->stop();
         shell_error(sh, "Timeout — panel didn't clear laser3");
         return -ETIMEDOUT;
     }
-    ctx->conveyor->stop();
+    ctx->conveyor->beltMotor()->stop();
     shell_print(sh, "OK — panel ejected");
     return 0;
 }
@@ -380,7 +381,7 @@ static int cmd_home(const struct shell *sh, size_t argc, char **argv)
         return -EBUSY;
     }
 
-    ctx->head->setEnabled(true);
+    ctx->head->motor()->setEnabled(true);
     shell_print(sh, "Homing head...");
     int err = ctx->head->home();
     if (err) {

@@ -99,10 +99,11 @@ int main(void)
     }
 
     // Auto-home head (after settings are applied)
-    if (machine_context.head && machine_context.head->config().auto_home) {
+    auto *head_motor = machine_context.head->motor();
+    if (head_motor && head_motor->config().auto_home) {
         LOG_INF("Auto-homing head with home_rpm=%u...",
-                machine_context.head->config().home_rpm);
-        machine_context.head->setEnabled(true);
+                head_motor->config().home_rpm);
+        head_motor->setEnabled(true);
         err = machine_context.head->home();
         if (err) {
             LOG_ERR("head home failed: %d", err);
@@ -110,8 +111,8 @@ int main(void)
     }
 
     LOG_INF("Auto-starting sequence...");
-    machine_context.conveyor->setEnabled(true);
-    machine_context.head->setEnabled(true);
+    machine_context.conveyor->beltMotor()->setEnabled(true);
+    machine_context.head->motor()->setEnabled(true);
     sfc_engine.setMode(engine::OperatingMode::AUTO);
     sfc_engine.start();
     app::startScan();

@@ -252,19 +252,19 @@ def _print_header(title, path=None):
 
 
 # --- Parameter Definitions ---
-# mm_per_rev values for linear conversion (0 = no conversion, show as RPM)
-MM_PER_REV = {"conveyor": 0, "head": 5.0, "width": 4.0}
 
 CONVEYOR_PARAMS = [
     ("Home Speed",      "cfg set conveyor home_rpm {v}",     10,   "rpm"),
     ("Accel Start",     "cfg set conveyor accel_start {v}",  10,   "rpm"),
     ("Accel Rate",      "cfg set conveyor accel_rate {v}",   100,  "rpm/s"),
+    ("Belt mm/rev",     "cfg set conveyor mm_per_rev {v}",   1.0,  "mm"),
 ]
 
 HEAD_PARAMS = [
     ("Home Speed",      "cfg set head home_rpm {v}",        5,    "mm/min"),
     ("Accel Start",     "cfg set head accel_start {v}",     5,    "mm/min"),
     ("Accel Rate",      "cfg set head accel_rate {v}",      50,   "mm/min/s"),
+    ("mm/rev",          "cfg set head mm_per_rev {v}",      0.5,  "mm"),
     ("Safe Position",   "cfg set head safe_pos {v}",        100,  "steps"),
     ("Guides Clear",    "cfg set head guides_clear {v}",    0.5,  "mm"),
     ("Pins Touch",      "cfg set head pins_touch {v}",      0.5,  "mm"),
@@ -277,6 +277,7 @@ WIDTH_PARAMS = [
     ("Home Speed",      "cfg set width home_rpm {v}",        5,    "mm/min"),
     ("Accel Start",     "cfg set width accel_start {v}",     5,    "mm/min"),
     ("Accel Rate",      "cfg set width accel_rate {v}",      50,   "mm/min/s"),
+    ("mm/rev",          "cfg set width mm_per_rev {v}",      0.5,  "mm"),
     ("Safe Position",   "cfg set width safe_pos {v}",        100,  "steps"),
     ("Soft Limit Min",  "cfg set width limit_min {v}",       1.0,  "mm"),
     ("Soft Limit Max",  "cfg set width limit_max {v}",       1.0,  "mm"),
@@ -315,9 +316,11 @@ def _get_current_value(cfg_data, param_name, cmd_template, unit):
         "cfg set conveyor home_rpm": "home_rpm",
         "cfg set conveyor accel_start": "accel_start_rpm",
         "cfg set conveyor accel_rate": "accel_rpm_s",
+        "cfg set conveyor mm_per_rev": "belt_mm_per_rev",
         "cfg set head home_rpm": "home_rpm",
         "cfg set head accel_start": "accel_start_rpm",
         "cfg set head accel_rate": "accel_rpm_s",
+        "cfg set head mm_per_rev": "mm_per_rev",
         "cfg set head safe_pos": "safe_position",
         "cfg set head guides_clear": "guides_clear",
         "cfg set head pins_touch": "pins_touch",
@@ -327,6 +330,7 @@ def _get_current_value(cfg_data, param_name, cmd_template, unit):
         "cfg set width home_rpm": "home_rpm",
         "cfg set width accel_start": "accel_start_rpm",
         "cfg set width accel_rate": "accel_rpm_s",
+        "cfg set width mm_per_rev": "width_mm_per_rev",
         "cfg set width safe_pos": "safe_position",
         "cfg set width limit_min": "soft_limit_min",
         "cfg set width limit_max": "soft_limit_max",
@@ -342,13 +346,12 @@ def _get_current_value(cfg_data, param_name, cmd_template, unit):
         # Convert RPM to mm/min if the unit asks for it
         if unit in ("mm/min", "mm/min/s"):
             motor = _motor_from_cmd(base_cmd)
-            mpr = MM_PER_REV.get(motor, 0)
+            mpr = _get_mm_per_rev(cfg_data, motor)
             if mpr > 0:
                 converted = raw * mpr
                 return f"{converted:.1f}"
         # For steps-based limits on linear axes, show as mm
         if unit == "mm" and field in ("soft_limit_min", "soft_limit_max"):
-            # Already in mm from cfg show format "X (Y.YY mm)"
             mm_match = re.search(r'\(([-\d.]+)\s*mm\)', val)
             if mm_match:
                 return mm_match.group(1)
@@ -356,6 +359,20 @@ def _get_current_value(cfg_data, param_name, cmd_template, unit):
             return num.group(0)
         return str(int(raw))
     return "?"
+
+
+def _get_mm_per_rev(cfg_data, motor_name):
+    """Get mm_per_rev for a motor from cfg_data (read from cfg show)."""
+    if motor_name == "head":
+        val = cfg_data.get("mm_per_rev", "0")
+    elif motor_name == "width":
+        val = cfg_data.get("width_mm_per_rev", "0")
+    elif motor_name == "conveyor":
+        val = cfg_data.get("belt_mm_per_rev", "0")
+    else:
+        return 0
+    m = re.match(r'[-\d.]+', str(val))
+    return float(m.group(0)) if m else 0
 
 
 def _motor_from_cmd(base_cmd):
@@ -376,19 +393,13 @@ def _read_current_values(ser, node_idx):
             current_section = line.strip("[]").strip()
             sections[current_section] = {}
         elif current_section:
-            # Standard key = value
             m = re.match(r'\s*(\S+)\s*=\s*(.+)', line)
             if m:
                 sections[current_section][m.group(1)] = m.group(2).strip()
-            # Handle "accel: start_rpm=X accel_rpm_s=Y"
             accel_m = re.search(r'start_rpm=(\d+)\s+accel_rpm_s=(\d+)', line)
             if accel_m:
                 sections[current_section]["accel_start_rpm"] = accel_m.group(1)
                 sections[current_section]["accel_rpm_s"] = accel_m.group(2)
-            # Handle "mm_per_rev = X.XX"
-            mm_m = re.match(r'\s*mm_per_rev\s*=\s*([\d.]+)', line)
-            if mm_m:
-                sections[current_section]["mm_per_rev"] = mm_m.group(1)
 
     motor_map = {0: "1 conveyor", 1: "3 head", 2: "2 width"}
     section_key = motor_map.get(node_idx, "")
@@ -398,6 +409,14 @@ def _read_current_values(ser, node_idx):
         result.update(sections[section_key])
     if "head positions" in sections and node_idx == 1:
         result.update(sections["head positions"])
+    # Merge Conveyor/Head linear config sections
+    if node_idx in (0, 2) and "conveyor" in sections:
+        result.update(sections["conveyor"])
+    if node_idx == 1 and "head" in sections:
+        result.update(sections["head"])
+    # For width, also grab width_mm_per_rev from conveyor section
+    if node_idx == 2 and "conveyor" in sections:
+        result.update(sections["conveyor"])
     return result
 
 
@@ -437,12 +456,12 @@ def _adjust_param(ser, param_def, node_idx, level_name):
     name, cmd_template, step, unit = param_def
     base_cmd = cmd_template.split("{v}")[0].strip()
     motor = _motor_from_cmd(base_cmd)
-    mpr = MM_PER_REV.get(motor, 0)
-    is_linear = unit in ("mm/min", "mm/min/s") and mpr > 0
     node_name = NODES[node_idx][0]
 
     while True:
         cfg_data = _read_current_values(ser, node_idx)
+        mpr = _get_mm_per_rev(cfg_data, motor)
+        is_linear = unit in ("mm/min", "mm/min/s") and mpr > 0
         current = _get_current_value(cfg_data, name, cmd_template, unit)
 
         _clear_screen()

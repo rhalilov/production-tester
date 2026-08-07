@@ -143,6 +143,31 @@ static int io_cfg_set(const char *name, size_t len,
 
 SETTINGS_STATIC_HANDLER_DEFINE(io_cfg_h, "iocfg", NULL, io_cfg_set, NULL, NULL);
 
+// --- Linear config persistence (Conveyor/Head mm_per_rev) ---
+
+static component::Conveyor::Config saved_conv_cfg;
+static component::Head::Config saved_head_linear_cfg;
+static bool linear_cfg_loaded;
+
+static int linear_cfg_set(const char *name, size_t len,
+                          settings_read_cb read_cb, void *cb_arg)
+{
+    const char *next;
+    if (settings_name_steq(name, "conv", &next) && !next) {
+        if (read_cb(cb_arg, &saved_conv_cfg, sizeof(saved_conv_cfg)) < 0) return -EINVAL;
+        linear_cfg_loaded = true;
+        return 0;
+    }
+    if (settings_name_steq(name, "head", &next) && !next) {
+        if (read_cb(cb_arg, &saved_head_linear_cfg, sizeof(saved_head_linear_cfg)) < 0) return -EINVAL;
+        linear_cfg_loaded = true;
+        return 0;
+    }
+    return -ENOENT;
+}
+
+SETTINGS_STATIC_HANDLER_DEFINE(linear_cfg_h, "lcfg", NULL, linear_cfg_set, NULL, NULL);
+
 void config_apply_saved(void)
 {
     if (!params_loaded && !head_pos_loaded && !io_cfg_loaded) return;
@@ -150,7 +175,7 @@ void config_apply_saved(void)
     if (!ctx) return;
 
     if (params_loaded) {
-        StepperMotor *motors[] = { ctx->conveyor, ctx->width, ctx->head };
+        StepperMotor *motors[] = { ctx->conveyor->beltMotor(), ctx->conveyor->widthMotor(), ctx->head->motor() };
         for (int i = 0; i < 3; i++) {
             apply_params(i, motors[i]);
         }
@@ -167,7 +192,7 @@ void config_apply_saved(void)
 
     if (io_cfg_loaded) {
         component::Sensor *sensors[] = {
-            ctx->laser1, ctx->laser2, ctx->laser3, ctx->head_home,
+            ctx->conveyor->laser1(), ctx->conveyor->laser2(), ctx->conveyor->laser3(), ctx->head->homeSensor(),
             ctx->cyl1_a, ctx->cyl1_b, ctx->cyl2_a, ctx->cyl2_b,
             ctx->cyl3_a, ctx->cyl3_b
         };
@@ -191,6 +216,15 @@ void config_apply_saved(void)
         }
         LOG_INF("applied saved IO config (sensors + cylinder mapping)");
     }
+
+    if (linear_cfg_loaded) {
+        ctx->conveyor->config() = saved_conv_cfg;
+        ctx->head->config() = saved_head_linear_cfg;
+        LOG_INF("applied saved linear config: conv_belt=%.2f conv_width=%.2f head=%.2f",
+                (double)saved_conv_cfg.belt_mm_per_rev,
+                (double)saved_conv_cfg.width_mm_per_rev,
+                (double)saved_head_linear_cfg.mm_per_rev);
+    }
 }
 
 uint8_t config_cyl_idle_pos(int idx)
@@ -207,9 +241,9 @@ uint8_t config_cyl_idle_pos(int idx)
 
 static StepperMotor *motor_by_name(const char *name, engine::Context *ctx)
 {
-    if (strcmp(name, "conveyor") == 0 || strcmp(name, "1") == 0) return ctx->conveyor;
-    if (strcmp(name, "width") == 0 || strcmp(name, "2") == 0) return ctx->width;
-    if (strcmp(name, "head") == 0 || strcmp(name, "3") == 0) return ctx->head;
+    if (strcmp(name, "conveyor") == 0 || strcmp(name, "1") == 0) return ctx->conveyor->beltMotor();
+    if (strcmp(name, "width") == 0 || strcmp(name, "2") == 0) return ctx->conveyor->widthMotor();
+    if (strcmp(name, "head") == 0 || strcmp(name, "3") == 0) return ctx->head->motor();
     return nullptr;
 }
 
@@ -232,23 +266,27 @@ static int cmd_show(const struct shell *sh, size_t argc, char **argv)
         shell_print(sh, "  home_rpm       = %u", c.home_rpm);
         shell_print(sh, "  invert_dir     = %s", c.invert_dir ? "true" : "false");
         shell_print(sh, "  steps_per_rev  = %u", c.steps_per_rev);
-        if (c.mm_per_rev > 0) {
-            shell_print(sh, "  mm_per_rev     = %.2f", (double)c.mm_per_rev);
-        }
         if (c.has_limits) {
-            float mm_min = c.mm_per_rev > 0 ? (float)c.soft_limit_min * c.mm_per_rev / (float)c.steps_per_rev : 0;
-            float mm_max = c.mm_per_rev > 0 ? (float)c.soft_limit_max * c.mm_per_rev / (float)c.steps_per_rev : 0;
-            shell_print(sh, "  soft_limit_min = %d (%.2f mm)", c.soft_limit_min, (double)mm_min);
-            shell_print(sh, "  soft_limit_max = %d (%.2f mm)", c.soft_limit_max, (double)mm_max);
+            shell_print(sh, "  soft_limit_min = %d", c.soft_limit_min);
+            shell_print(sh, "  soft_limit_max = %d", c.soft_limit_max);
             shell_print(sh, "  safe_position  = %d", c.safe_position);
         }
         shell_print(sh, "  accel: start_rpm=%u accel_rpm_s=%u", c.accel.start_rpm, c.accel.accel_rpm_s);
         shell_print(sh, "");
     };
 
-    print_cfg("1 conveyor", ctx->conveyor);
-    print_cfg("2 width", ctx->width);
-    print_cfg("3 head", ctx->head);
+    print_cfg("1 conveyor", ctx->conveyor->beltMotor());
+    print_cfg("2 width", ctx->conveyor->widthMotor());
+    print_cfg("3 head", ctx->head->motor());
+
+    // Conveyor/Head mm_per_rev
+    shell_print(sh, "[conveyor]");
+    shell_print(sh, "  belt_mm_per_rev  = %.2f", (double)ctx->conveyor->beltMmPerRev());
+    shell_print(sh, "  width_mm_per_rev = %.2f", (double)ctx->conveyor->widthMmPerRev());
+    shell_print(sh, "");
+    shell_print(sh, "[head]");
+    shell_print(sh, "  mm_per_rev       = %.2f", (double)ctx->head->mmPerRev());
+    shell_print(sh, "");
 
     // Table positions
     if (ctx->recipe) {
@@ -279,7 +317,7 @@ static int cmd_set(const struct shell *sh, size_t argc, char **argv)
         shell_print(sh, "  motor: 1|conveyor, 2|width, 3|head");
         shell_print(sh, "  proc_eng params: home_rpm, safe_pos, accel_start, accel_rate");
         shell_print(sh, "  proc_eng (head): guides_clear, pins_touch, pins_contact (mm)");
-        shell_print(sh, "  factory params:  invert_dir, steps_per_rev, mm_per_rev,");
+        shell_print(sh, "  factory params:  invert_dir, steps_per_rev,");
         shell_print(sh, "                   limit_min, limit_max, limit_here");
         return -EINVAL;
     }
@@ -297,7 +335,6 @@ static int cmd_set(const struct shell *sh, size_t argc, char **argv)
     // Factory-only parameters
     bool is_factory_param = (strcmp(param, "invert_dir") == 0 ||
                              strcmp(param, "steps_per_rev") == 0 ||
-                             strcmp(param, "mm_per_rev") == 0 ||
                              strcmp(param, "limit_min") == 0 ||
                              strcmp(param, "limit_max") == 0 ||
                              strcmp(param, "limit_here") == 0);
@@ -316,39 +353,20 @@ static int cmd_set(const struct shell *sh, size_t argc, char **argv)
     } else if (strcmp(param, "steps_per_rev") == 0) {
         cfg->steps_per_rev = atoi(val_str);
         shell_print(sh, "steps_per_rev = %u", cfg->steps_per_rev);
-    } else if (strcmp(param, "mm_per_rev") == 0) {
-        cfg->mm_per_rev = strtof(val_str, nullptr);
-        shell_print(sh, "mm_per_rev = %.2f", (double)cfg->mm_per_rev);
     } else if (strcmp(param, "limit_min") == 0) {
-        float mm_per_step = cfg->mm_per_rev > 0 ? cfg->mm_per_rev / (float)cfg->steps_per_rev : 0;
-        if (mm_per_step > 0) {
-            float mm = strtof(val_str, nullptr);
-            cfg->soft_limit_min = (int32_t)(mm / mm_per_step);
-            shell_print(sh, "soft_limit_min = %.2f mm (%d steps)", (double)mm, cfg->soft_limit_min);
-        } else {
-            cfg->soft_limit_min = atoi(val_str);
-            shell_print(sh, "soft_limit_min = %d steps", cfg->soft_limit_min);
-        }
+        cfg->soft_limit_min = atoi(val_str);
+        shell_print(sh, "soft_limit_min = %d steps", cfg->soft_limit_min);
     } else if (strcmp(param, "limit_max") == 0) {
-        float mm_per_step = cfg->mm_per_rev > 0 ? cfg->mm_per_rev / (float)cfg->steps_per_rev : 0;
-        if (mm_per_step > 0) {
-            float mm = strtof(val_str, nullptr);
-            cfg->soft_limit_max = (int32_t)(mm / mm_per_step);
-            shell_print(sh, "soft_limit_max = %.2f mm (%d steps)", (double)mm, cfg->soft_limit_max);
-        } else {
-            cfg->soft_limit_max = atoi(val_str);
-            shell_print(sh, "soft_limit_max = %d steps", cfg->soft_limit_max);
-        }
+        cfg->soft_limit_max = atoi(val_str);
+        shell_print(sh, "soft_limit_max = %d steps", cfg->soft_limit_max);
     } else if (strcmp(param, "limit_here") == 0) {
         int32_t pos = motor->position();
-        float mm_per_step = cfg->mm_per_rev > 0 ? cfg->mm_per_rev / (float)cfg->steps_per_rev : 0;
-        float mm = mm_per_step > 0 ? (float)pos * mm_per_step : 0;
         if (strcmp(val_str, "min") == 0) {
             cfg->soft_limit_min = pos;
-            shell_print(sh, "soft_limit_min = %.2f mm (%d steps) [current pos]", (double)mm, pos);
+            shell_print(sh, "soft_limit_min = %d steps [current pos]", pos);
         } else if (strcmp(val_str, "max") == 0) {
             cfg->soft_limit_max = pos;
-            shell_print(sh, "soft_limit_max = %.2f mm (%d steps) [current pos]", (double)mm, pos);
+            shell_print(sh, "soft_limit_max = %d steps [current pos]", pos);
         } else {
             shell_error(sh, "usage: cfg set %s limit_here <min|max>", argv[1]);
             return -EINVAL;
@@ -374,6 +392,22 @@ static int cmd_set(const struct shell *sh, size_t argc, char **argv)
         if (!ctx->recipe) { shell_error(sh, "no recipe"); return -EINVAL; }
         ctx->recipe->head_pos.pins_contact = strtof(val_str, nullptr);
         shell_print(sh, "head_pos.pins_contact = %.2f mm", (double)ctx->recipe->head_pos.pins_contact);
+    } else if (strcmp(param, "mm_per_rev") == 0) {
+        float val = strtof(val_str, nullptr);
+        const char *mname = argv[1];
+        if (strcmp(mname, "conveyor") == 0 || strcmp(mname, "1") == 0) {
+            ctx->conveyor->config().belt_mm_per_rev = val;
+            shell_print(sh, "conveyor belt_mm_per_rev = %.2f", (double)val);
+        } else if (strcmp(mname, "width") == 0 || strcmp(mname, "2") == 0) {
+            ctx->conveyor->config().width_mm_per_rev = val;
+            shell_print(sh, "conveyor width_mm_per_rev = %.2f", (double)val);
+        } else if (strcmp(mname, "head") == 0 || strcmp(mname, "3") == 0) {
+            ctx->head->config().mm_per_rev = val;
+            shell_print(sh, "head mm_per_rev = %.2f", (double)val);
+        } else {
+            shell_error(sh, "mm_per_rev: unknown target '%s'", mname);
+            return -EINVAL;
+        }
     } else {
         shell_error(sh, "Unknown param: %s", param);
         return -EINVAL;
@@ -392,7 +426,7 @@ static int cmd_save(const struct shell *sh, size_t argc, char **argv)
         return -EACCES;
     }
 
-    StepperMotor *motors[] = { ctx->conveyor, ctx->width, ctx->head };
+    StepperMotor *motors[] = { ctx->conveyor->beltMotor(), ctx->conveyor->widthMotor(), ctx->head->motor() };
     for (int i = 0; i < 3; i++) {
         snapshot_params(i, motors[i]);
         char key[8];
@@ -413,11 +447,22 @@ static int cmd_save(const struct shell *sh, size_t argc, char **argv)
         }
     }
 
+    // Save Conveyor/Head mm_per_rev
+    {
+        auto &cc = ctx->conveyor->config();
+        int rc = settings_save_one("lcfg/conv", &cc, sizeof(cc));
+        if (rc) { shell_error(sh, "Failed to save conveyor config: %d", rc); return rc; }
+
+        auto &hc = ctx->head->config();
+        rc = settings_save_one("lcfg/head", &hc, sizeof(hc));
+        if (rc) { shell_error(sh, "Failed to save head config: %d", rc); return rc; }
+    }
+
     // Save IO config (sensor polarity + cylinder sensor mapping)
     {
         IoConfig io;
         component::Sensor *sensors[] = {
-            ctx->laser1, ctx->laser2, ctx->laser3, ctx->head_home,
+            ctx->conveyor->laser1(), ctx->conveyor->laser2(), ctx->conveyor->laser3(), ctx->head->homeSensor(),
             ctx->cyl1_a, ctx->cyl1_b, ctx->cyl2_a, ctx->cyl2_b,
             ctx->cyl3_a, ctx->cyl3_b
         };
@@ -485,41 +530,24 @@ static int cmd_limit(const struct shell *sh, size_t argc, char **argv)
     }
 
     auto &c = motor->config();
-    float mm_per_step = (c.mm_per_rev > 0) ? c.mm_per_rev / (float)c.steps_per_rev : 0;
 
     if (argc < 3) {
-        float mm_min = mm_per_step > 0 ? (float)c.soft_limit_min * mm_per_step : 0;
-        float mm_max = mm_per_step > 0 ? (float)c.soft_limit_max * mm_per_step : 0;
-        float mm_pos = mm_per_step > 0 ? (float)motor->position() * mm_per_step : 0;
         shell_print(sh, "Motor %s limits:", argv[1]);
-        if (mm_per_step > 0) {
-            shell_print(sh, "  min = %.2f mm (%d steps)", (double)mm_min, c.soft_limit_min);
-            shell_print(sh, "  max = %.2f mm (%d steps)", (double)mm_max, c.soft_limit_max);
-            shell_print(sh, "  pos = %.2f mm (%d steps)", (double)mm_pos, motor->position());
-        } else {
-            shell_print(sh, "  min = %d steps", c.soft_limit_min);
-            shell_print(sh, "  max = %d steps", c.soft_limit_max);
-            shell_print(sh, "  pos = %d steps", motor->position());
-        }
+        shell_print(sh, "  min = %d steps", c.soft_limit_min);
+        shell_print(sh, "  max = %d steps", c.soft_limit_max);
+        shell_print(sh, "  pos = %d steps", motor->position());
         return 0;
     }
 
     if (strcmp(argv[2], "here") == 0) {
         int32_t pos = motor->position();
-        float mm = mm_per_step > 0 ? (float)pos * mm_per_step : 0;
         const char *which = (argc >= 4) ? argv[3] : "min";
         if (strcmp(which, "min") == 0) {
             motor->setSoftLimits(pos, c.soft_limit_max);
-            if (mm_per_step > 0)
-                shell_print(sh, "soft_limit_min = %.2f mm (%d steps)", (double)mm, pos);
-            else
-                shell_print(sh, "soft_limit_min = %d steps", pos);
+            shell_print(sh, "soft_limit_min = %d steps", pos);
         } else if (strcmp(which, "max") == 0) {
             motor->setSoftLimits(c.soft_limit_min, pos);
-            if (mm_per_step > 0)
-                shell_print(sh, "soft_limit_max = %.2f mm (%d steps)", (double)mm, pos);
-            else
-                shell_print(sh, "soft_limit_max = %d steps", pos);
+            shell_print(sh, "soft_limit_max = %d steps", pos);
         } else {
             shell_error(sh, "usage: cfg limit %s here <min|max>", argv[1]);
             return -EINVAL;
@@ -528,24 +556,18 @@ static int cmd_limit(const struct shell *sh, size_t argc, char **argv)
     }
 
     if (argc < 4) {
-        shell_error(sh, "usage: cfg limit %s <min|max> <mm>", argv[1]);
+        shell_error(sh, "usage: cfg limit %s <min|max> <steps>", argv[1]);
         return -EINVAL;
     }
 
-    float mm_val = strtof(argv[3], nullptr);
-    int32_t steps;
-    if (mm_per_step > 0) {
-        steps = (int32_t)(mm_val / mm_per_step);
-    } else {
-        steps = (int32_t)mm_val;
-    }
+    int32_t steps = atoi(argv[3]);
 
     if (strcmp(argv[2], "min") == 0) {
         motor->setSoftLimits(steps, c.soft_limit_max);
-        shell_print(sh, "soft_limit_min = %.2f mm (%d steps)", (double)mm_val, steps);
+        shell_print(sh, "soft_limit_min = %d steps", steps);
     } else if (strcmp(argv[2], "max") == 0) {
         motor->setSoftLimits(c.soft_limit_min, steps);
-        shell_print(sh, "soft_limit_max = %.2f mm (%d steps)", (double)mm_val, steps);
+        shell_print(sh, "soft_limit_max = %d steps", steps);
     } else {
         shell_error(sh, "Unknown: %s (min/max/here)", argv[2]);
         return -EINVAL;
@@ -576,9 +598,9 @@ static int cmd_unlock(const struct shell *sh, size_t argc, char **argv)
         if (eng && ctx) {
             app::stopScan();
             eng->stop();
-            ctx->conveyor->stop();
-            ctx->width->stop();
-            ctx->head->stop();
+            ctx->conveyor->beltMotor()->stop();
+            ctx->conveyor->widthMotor()->stop();
+            ctx->head->motor()->stop();
             ctx->stopper->off();
             ctx->rfid->off();
             ctx->locker->off();
@@ -604,10 +626,10 @@ static int cmd_lock(const struct shell *sh, size_t argc, char **argv)
 
 static component::Sensor *sensor_by_name(const char *name, engine::Context *ctx)
 {
-    if (strcmp(name, "laser1") == 0) return ctx->laser1;
-    if (strcmp(name, "laser2") == 0) return ctx->laser2;
-    if (strcmp(name, "laser3") == 0) return ctx->laser3;
-    if (strcmp(name, "head_home") == 0) return ctx->head_home;
+    if (strcmp(name, "laser1") == 0) return ctx->conveyor->laser1();
+    if (strcmp(name, "laser2") == 0) return ctx->conveyor->laser2();
+    if (strcmp(name, "laser3") == 0) return ctx->conveyor->laser3();
+    if (strcmp(name, "head_home") == 0) return ctx->head->homeSensor();
     if (strcmp(name, "ind6") == 0) return ctx->cyl1_a;
     if (strcmp(name, "ind7") == 0) return ctx->cyl1_b;
     if (strcmp(name, "ind8") == 0) return ctx->cyl2_a;
@@ -635,7 +657,7 @@ static int cmd_sensor(const struct shell *sh, size_t argc, char **argv)
 
     if (argc < 3) {
         component::Sensor *all[] = {
-            ctx->laser1, ctx->laser2, ctx->laser3, ctx->head_home,
+            ctx->conveyor->laser1(), ctx->conveyor->laser2(), ctx->conveyor->laser3(), ctx->head->homeSensor(),
             ctx->cyl1_a, ctx->cyl1_b, ctx->cyl2_a, ctx->cyl2_b,
             ctx->cyl3_a, ctx->cyl3_b
         };
@@ -841,7 +863,7 @@ static void blob_snapshot(ConfigBlob *blob, engine::Context *ctx)
     blob->magic = CONFIG_BLOB_MAGIC;
     blob->version = CONFIG_BLOB_VERSION;
 
-    StepperMotor *motors[] = { ctx->conveyor, ctx->width, ctx->head };
+    StepperMotor *motors[] = { ctx->conveyor->beltMotor(), ctx->conveyor->widthMotor(), ctx->head->motor() };
     for (int i = 0; i < 3; i++) {
         snapshot_params(i, motors[i]);
         blob->motors[i] = params[i];
@@ -854,7 +876,7 @@ static void blob_snapshot(ConfigBlob *blob, engine::Context *ctx)
     }
 
     component::Sensor *sensors[] = {
-        ctx->laser1, ctx->laser2, ctx->laser3, ctx->head_home,
+        ctx->conveyor->laser1(), ctx->conveyor->laser2(), ctx->conveyor->laser3(), ctx->head->homeSensor(),
         ctx->cyl1_a, ctx->cyl1_b, ctx->cyl2_a, ctx->cyl2_b,
         ctx->cyl3_a, ctx->cyl3_b
     };
@@ -894,7 +916,7 @@ static void blob_apply(const ConfigBlob *blob, engine::Context *ctx)
     for (int i = 0; i < 3; i++) {
         params[i] = blob->motors[i];
     }
-    StepperMotor *motors[] = { ctx->conveyor, ctx->width, ctx->head };
+    StepperMotor *motors[] = { ctx->conveyor->beltMotor(), ctx->conveyor->widthMotor(), ctx->head->motor() };
     for (int i = 0; i < 3; i++) {
         apply_params(i, motors[i]);
     }
@@ -904,7 +926,7 @@ static void blob_apply(const ConfigBlob *blob, engine::Context *ctx)
     }
 
     component::Sensor *sensors[] = {
-        ctx->laser1, ctx->laser2, ctx->laser3, ctx->head_home,
+        ctx->conveyor->laser1(), ctx->conveyor->laser2(), ctx->conveyor->laser3(), ctx->head->homeSensor(),
         ctx->cyl1_a, ctx->cyl1_b, ctx->cyl2_a, ctx->cyl2_b,
         ctx->cyl3_a, ctx->cyl3_b
     };
@@ -1020,7 +1042,7 @@ static int parse_config_line(const char *line, engine::Context *ctx)
         const char *field = key + plen;
 
         auto *cfg = const_cast<StepperMotorConfig *>(
-            &((StepperMotor *[]){ctx->conveyor, ctx->width, ctx->head})[i]->config());
+            &((StepperMotor *[]){ctx->conveyor->beltMotor(), ctx->conveyor->widthMotor(), ctx->head->motor()})[i]->config());
 
         if (strcmp(field, "home_rpm") == 0) cfg->home_rpm = atoi(val);
         else if (strcmp(field, "limit_min") == 0) cfg->soft_limit_min = atoi(val);
@@ -1045,7 +1067,7 @@ static int parse_config_line(const char *line, engine::Context *ctx)
     if (strncmp(key, "sensor.", 7) == 0) {
         const char *name = key + 7;
         component::Sensor *sensors[] = {
-            ctx->laser1, ctx->laser2, ctx->laser3, ctx->head_home,
+            ctx->conveyor->laser1(), ctx->conveyor->laser2(), ctx->conveyor->laser3(), ctx->head->homeSensor(),
             ctx->cyl1_a, ctx->cyl1_b, ctx->cyl2_a, ctx->cyl2_b,
             ctx->cyl3_a, ctx->cyl3_b
         };

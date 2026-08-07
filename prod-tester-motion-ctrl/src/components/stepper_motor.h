@@ -53,7 +53,6 @@ struct StepperMotorConfig {
 
     AccelProfile accel;
     uint32_t steps_per_rev;
-    float mm_per_rev;       // 0 = no linear conversion available
 };
 
 class StepperMotor {
@@ -114,15 +113,6 @@ public:
     void onMoveComplete();
 
     const StepperMotorConfig &config() const { return *cfg_; }
-
-    int32_t mmToSteps(float mm) const {
-        if (!cfg_ || cfg_->mm_per_rev <= 0.0f) return 0;
-        return (int32_t)(mm * cfg_->steps_per_rev / cfg_->mm_per_rev);
-    }
-    float stepsToMm(int32_t steps) const {
-        if (!cfg_ || cfg_->mm_per_rev <= 0.0f) return 0.0f;
-        return (float)steps * cfg_->mm_per_rev / cfg_->steps_per_rev;
-    }
 
     void setSoftLimits(int32_t min, int32_t max) {
         auto *c = const_cast<StepperMotorConfig *>(cfg_);

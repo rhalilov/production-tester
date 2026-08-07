@@ -1,9 +1,8 @@
 #pragma once
 
-#include "components/stepper_motor.h"
+#include "components/conveyor.h"
+#include "components/head.h"
 #include "components/cylinder.h"
-#include "components/smema_port.h"
-#include "components/sensor.h"
 #include "engine/timer.h"
 #include "config/recipe.h"
 
@@ -12,21 +11,14 @@ namespace engine {
 enum class TestResult : uint8_t { NONE, PASS, FAIL };
 
 struct Context {
-    // Components
-    component::StepperMotor *conveyor;      // axis1
-    component::StepperMotor *width;         // axis2
-    component::StepperMotor *head;          // axis3 (dual motor)
+    // High-level assemblies
+    component::Conveyor *conveyor;
+    component::Head *head;
 
+    // Cylinders
     component::Cylinder *stopper;           // solenoid 1
     component::Cylinder *rfid;              // solenoid 2
     component::Cylinder *locker;            // solenoid 3
-
-    component::SmemaPort *smema;
-
-    // Sequence-trigger sensors
-    component::Sensor *laser1;              // panel presented (infeed)
-    component::Sensor *laser2;              // panel near (mid)
-    component::Sensor *laser3;              // panel in position (outfeed)
 
     // Cylinder confirm sensors
     component::Sensor *cyl1_a;
@@ -35,9 +27,6 @@ struct Context {
     component::Sensor *cyl2_b;
     component::Sensor *cyl3_a;
     component::Sensor *cyl3_b;
-
-    // Head home sensor
-    component::Sensor *head_home;
 
     // Active recipe
     config::Recipe *recipe;

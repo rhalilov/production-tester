@@ -7,7 +7,10 @@
 #include "engine/step.h"
 #include "components/stepper_motor.h"
 #include "components/cylinder.h"
-#include "components/smema_port.h"
+#include "components/conveyor.h"
+#include "components/head.h"
+#include "components/smema_upstream.h"
+#include "components/smema_downstream.h"
 #include "components/sensor.h"
 #include "config/recipe.h"
 
@@ -94,7 +97,6 @@ static StepperMotorConfig conveyor_cfg = {
     .invert_dir = false,    // conveyor direction
     .accel = { .start_rpm = 5, .accel_rpm_s = 100 },
     .steps_per_rev = CONFIG_MOTOR_STEPS_PER_REV,
-    .mm_per_rev = 0,    // conveyor: no linear axis
 };
 
 static StepperMotorConfig width_cfg = {
@@ -119,10 +121,9 @@ static StepperMotorConfig width_cfg = {
     .invert_dir = false,
     .accel = { .start_rpm = 5, .accel_rpm_s = 80 },
     .steps_per_rev = CONFIG_MOTOR_STEPS_PER_REV,
-    .mm_per_rev = 4.0f,    // width: 4mm per revolution
 };
 
-static StepperMotorConfig head_cfg = {
+static StepperMotorConfig head_motor_cfg = {
     .stepper_dev = DEVICE_DT_GET(DT_NODELABEL(axis3)),
     .ena_pin = &ena3_spec,
     .alm_pins = alm_axis3,
@@ -144,7 +145,6 @@ static StepperMotorConfig head_cfg = {
     .invert_dir = false,
     .accel = { .start_rpm = 5, .accel_rpm_s = 120 },
     .steps_per_rev = CONFIG_MOTOR_STEPS_PER_REV,
-    .mm_per_rev = 5.0f,    // head: 5mm per revolution
 };
 
 static CylinderConfig stopper_cfg = {
@@ -174,12 +174,15 @@ static CylinderConfig locker_cfg = {
     .timeout_ms = CONFIG_CYLINDER_CONFIRM_TIMEOUT_MS,
 };
 
-static SmemaPortConfig smema_cfg = {
-    .board_available_in = &smema_up_ba_spec,
-    .machine_ready_out = &smema_up_mr_spec,
-    .board_available_out = &smema_dn_ba_spec,
-    .machine_ready_in = &smema_dn_mr_spec,
-    .board_available_fail_out = &smema_dn_ba_fail_spec,
+static SmemaUpstreamConfig smema_up_cfg = {
+    .ba_in = &smema_up_ba_spec,
+    .mr_out = &smema_up_mr_spec,
+};
+
+static SmemaDownstreamConfig smema_dn_cfg = {
+    .mr_in = &smema_dn_mr_spec,
+    .ba_out = &smema_dn_ba_spec,
+    .ba_fail_out = &smema_dn_ba_fail_spec,
 };
 
 // Sensor configs
@@ -204,7 +207,8 @@ static Cylinder cyl_stopper;
 static Cylinder cyl_rfid;
 static Cylinder cyl_locker;
 
-static SmemaPort smema_port;
+static SmemaUpstream smema_upstream;
+static SmemaDownstream smema_downstream;
 
 static Sensor sens_laser1;
 static Sensor sens_laser2;
@@ -213,6 +217,9 @@ static Sensor sens_head_home;
 static Sensor sens_cyl1a, sens_cyl1b;
 static Sensor sens_cyl2a, sens_cyl2b;
 static Sensor sens_cyl3a, sens_cyl3b;
+
+static Conveyor machine_conveyor;
+static Head machine_head;
 
 // --- Default recipe ---
 static config::Recipe default_recipe = {
@@ -242,10 +249,10 @@ static config::Recipe default_recipe = {
 static void interlock_check(Context &ctx, FaultManager &faults)
 {
     // Poll sensors every scan
-    ctx.laser1->poll();
-    ctx.laser2->poll();
-    ctx.laser3->poll();
-    ctx.head_home->poll();
+    ctx.conveyor->laser1()->poll();
+    ctx.conveyor->laser2()->poll();
+    ctx.conveyor->laser3()->poll();
+    ctx.head->homeSensor()->poll();
     ctx.cyl1_a->poll();
     ctx.cyl1_b->poll();
     ctx.cyl2_a->poll();
@@ -270,7 +277,7 @@ static StepDef infeed_steps[] = {
       nullptr,
       nullptr,
       [](Context &ctx) -> bool {
-          return !ctx.smema->boardAvailableIn();
+          return !ctx.conveyor->upstream()->boardAvailable();
       },
       1, nullptr, 0
     },
@@ -279,16 +286,16 @@ static StepDef infeed_steps[] = {
     { "request",
       [](Context &ctx) {
           TRACE_ACT("smema_mr_out=HIGH");
-          ctx.smema->setMachineReadyOut(true);
+          ctx.conveyor->upstream()->setMachineReady(true);
           TRACE_ACT("conveyor RUN +%urpm", ctx.recipe->motor_presets[1].rpm);
-          ctx.conveyor->run(ctx.recipe->motor_presets[1].rpm, MotionDir::POS);
+          ctx.conveyor->beltMotor()->run(ctx.recipe->motor_presets[1].rpm, MotionDir::POS);
           TRACE_WAIT("laser1 triggered");
           ctx.wait_desc = "laser1 triggered";
       },
       nullptr,
       nullptr,
       [](Context &ctx) -> bool {
-          return ctx.laser1->triggered();
+          return ctx.conveyor->boardPresented();
       },
       2, nullptr, 0
     },
@@ -302,11 +309,11 @@ static StepDef infeed_steps[] = {
       nullptr,
       [](Context &ctx) {
           TRACE_ACT("smema_mr_out=LOW");
-          ctx.smema->setMachineReadyOut(false);
+          ctx.conveyor->upstream()->setMachineReady(false);
           TRACE_ACT("conveyor STOP");
-          ctx.conveyor->stop();
+          ctx.conveyor->stopBelt();
       },
-      [](Context &ctx) -> bool { return !ctx.laser1->triggered(); },
+      [](Context &ctx) -> bool { return !ctx.conveyor->boardPresented(); },
       3, nullptr, 0
     },
 
@@ -314,16 +321,16 @@ static StepDef infeed_steps[] = {
     { "convey_in",
       [](Context &ctx) {
           TRACE_ACT("conveyor RUN +%urpm", ctx.recipe->motor_presets[1].rpm);
-          ctx.conveyor->run(ctx.recipe->motor_presets[1].rpm, MotionDir::POS);
+          ctx.conveyor->beltMotor()->run(ctx.recipe->motor_presets[1].rpm, MotionDir::POS);
           TRACE_WAIT("laser2 triggered");
           ctx.wait_desc = "laser2 triggered";
       },
       nullptr,
       [](Context &ctx) {
           TRACE_ACT("conveyor STOP");
-          ctx.conveyor->stop();
+          ctx.conveyor->stopBelt();
       },
-      [](Context &ctx) -> bool { return ctx.laser2->triggered(); },
+      [](Context &ctx) -> bool { return ctx.conveyor->boardNear(); },
       4, nullptr, 0
     },
 
@@ -345,23 +352,24 @@ static StepDef infeed_steps[] = {
       [](Context &ctx) {
           TRACE_ACT("conveyor GO %d steps @%urpm",
                     ctx.recipe->motor_presets[2].steps, ctx.recipe->motor_presets[2].rpm);
-          ctx.conveyor->go(ctx.recipe->motor_presets[2].steps, ctx.recipe->motor_presets[2].rpm);
+          ctx.conveyor->beltMotor()->go(ctx.recipe->motor_presets[2].steps, ctx.recipe->motor_presets[2].rpm);
           TRACE_WAIT("conveyor move done");
           ctx.wait_desc = "conveyor move done";
       },
       nullptr, nullptr,
-      [](Context &ctx) -> bool { return !ctx.conveyor->isMoving(); },
+      [](Context &ctx) -> bool { return !ctx.conveyor->beltMotor()->isMoving(); },
       6, nullptr, 0
     },
 
-    // Step 6: Table down to pins_touch
+    // Step 6: Head down to pins_touch
     { "pins_touch",
       [](Context &ctx) {
-          int32_t target = ctx.head->mmToSteps(ctx.recipe->head_pos.pins_touch);
+          float target_mm = ctx.recipe->head_pos.pins_touch;
+          int32_t target = ctx.head->mmToSteps(target_mm);
           TRACE_ACT("head GOTO %.1fmm (%d steps) @%urpm",
-                    (double)ctx.recipe->head_pos.pins_touch, target,
+                    (double)target_mm, target,
                     ctx.recipe->motor_presets[3].rpm);
-          ctx.head->goTo(target, ctx.recipe->motor_presets[3].rpm);
+          ctx.head->motor()->goTo(target, ctx.recipe->motor_presets[3].rpm);
           TRACE_WAIT("head move done");
           ctx.wait_desc = "head move done";
       },
@@ -370,14 +378,15 @@ static StepDef infeed_steps[] = {
       7, nullptr, 0
     },
 
-    // Step 7: Table down to pins_contact
+    // Step 7: Head down to pins_contact
     { "pins_contact",
       [](Context &ctx) {
-          int32_t target = ctx.head->mmToSteps(ctx.recipe->head_pos.pins_contact);
+          float target_mm = ctx.recipe->head_pos.pins_contact;
+          int32_t target = ctx.head->mmToSteps(target_mm);
           TRACE_ACT("head GOTO %.1fmm (%d steps) @%urpm",
-                    (double)ctx.recipe->head_pos.pins_contact, target,
+                    (double)target_mm, target,
                     ctx.recipe->motor_presets[4].rpm);
-          ctx.head->goTo(target, ctx.recipe->motor_presets[4].rpm);
+          ctx.head->motor()->goTo(target, ctx.recipe->motor_presets[4].rpm);
           TRACE_WAIT("head move done");
           ctx.wait_desc = "head move done";
       },
@@ -430,18 +439,18 @@ static StepDef infeed_steps[] = {
     // Step 11: Table up to home
     { "head_up",
       [](Context &ctx) {
-          uint32_t rpm = ctx.head->config().home_rpm;
+          uint32_t rpm = ctx.head->motor()->config().home_rpm;
           TRACE_ACT("head RUN +%urpm (up to home)", rpm);
-          ctx.head->run(rpm, MotionDir::POS);
+          ctx.head->motor()->run(rpm, MotionDir::POS);
           TRACE_WAIT("head_home triggered");
           ctx.wait_desc = "head_home triggered";
       },
       nullptr,
       [](Context &ctx) {
           TRACE_ACT("head STOP");
-          ctx.head->stop();
+          ctx.head->motor()->stop();
       },
-      [](Context &ctx) -> bool { return ctx.head_home->triggered(); },
+      [](Context &ctx) -> bool { return ctx.head->atHome(); },
       12, nullptr, 0
     },
 
@@ -488,16 +497,16 @@ static StepDef infeed_steps[] = {
     { "convey_out",
       [](Context &ctx) {
           TRACE_ACT("conveyor RUN +%urpm", ctx.recipe->motor_presets[5].rpm);
-          ctx.conveyor->run(ctx.recipe->motor_presets[5].rpm, MotionDir::POS);
+          ctx.conveyor->beltMotor()->run(ctx.recipe->motor_presets[5].rpm, MotionDir::POS);
           TRACE_WAIT("laser3 triggered");
           ctx.wait_desc = "laser3 triggered";
       },
       nullptr,
       [](Context &ctx) {
           TRACE_ACT("conveyor STOP");
-          ctx.conveyor->stop();
+          ctx.conveyor->stopBelt();
       },
-      [](Context &ctx) -> bool { return ctx.laser3->triggered(); },
+      [](Context &ctx) -> bool { return ctx.conveyor->boardInPosition(); },
       16, nullptr, 0
     },
 
@@ -507,10 +516,10 @@ static StepDef infeed_steps[] = {
           TRACE_ACT("conveyor STOPPED at laser3, board ready");
           if (ctx.last_result == TestResult::FAIL) {
               TRACE_ACT("smema_ba_fail_out=HIGH (NG)");
-              ctx.smema->setBoardAvailableFailOut(true);
+              ctx.conveyor->downstream()->setBoardAvailableFail(true);
           } else {
               TRACE_ACT("smema_ba_out=HIGH");
-              ctx.smema->setBoardAvailableOut(true);
+              ctx.conveyor->downstream()->setBoardAvailable(true);
           }
           TRACE_WAIT("Down MR (next machine request)");
           ctx.wait_desc = "Down MR (next machine request)";
@@ -518,11 +527,10 @@ static StepDef infeed_steps[] = {
       nullptr,
       [](Context &ctx) {
           TRACE_ACT("smema outputs LOW");
-          ctx.smema->setBoardAvailableOut(false);
-          ctx.smema->setBoardAvailableFailOut(false);
+          ctx.conveyor->downstream()->allOff();
       },
       [](Context &ctx) -> bool {
-          return !ctx.smema->machineReadyIn();
+          return !ctx.conveyor->downstream()->machineReady();
       },
       17, nullptr, 0
     },
@@ -531,16 +539,16 @@ static StepDef infeed_steps[] = {
     { "eject",
       [](Context &ctx) {
           TRACE_ACT("conveyor RUN +%urpm (eject)", ctx.recipe->motor_presets[6].rpm);
-          ctx.conveyor->run(ctx.recipe->motor_presets[6].rpm, MotionDir::POS);
+          ctx.conveyor->beltMotor()->run(ctx.recipe->motor_presets[6].rpm, MotionDir::POS);
           TRACE_WAIT("laser3 released");
           ctx.wait_desc = "laser3 released";
       },
       nullptr,
       [](Context &ctx) {
           TRACE_ACT("conveyor STOP");
-          ctx.conveyor->stop();
+          ctx.conveyor->stopBelt();
       },
-      [](Context &ctx) -> bool { return !ctx.laser3->triggered(); },
+      [](Context &ctx) -> bool { return !ctx.conveyor->boardInPosition(); },
       -1, nullptr, 0
     },
 };
@@ -571,7 +579,7 @@ int machine_init(void)
     err = motor_width.init(width_cfg);
     if (err) { LOG_ERR("width init: %d", err); return err; }
 
-    err = motor_head.init(head_cfg);
+    err = motor_head.init(head_motor_cfg);
     if (err) { LOG_ERR("head init: %d", err); return err; }
 
     // Cylinders
@@ -585,8 +593,11 @@ int machine_init(void)
     if (err) { LOG_ERR("locker init: %d", err); return err; }
 
     // SMEMA
-    err = smema_port.init(smema_cfg);
-    if (err) { LOG_ERR("smema init: %d", err); return err; }
+    err = smema_upstream.init(smema_up_cfg);
+    if (err) { LOG_ERR("smema upstream init: %d", err); return err; }
+
+    err = smema_downstream.init(smema_dn_cfg);
+    if (err) { LOG_ERR("smema downstream init: %d", err); return err; }
 
     // Sensors
     sens_laser1.init(laser1_cfg);
@@ -600,24 +611,28 @@ int machine_init(void)
     sens_cyl3a.init(cyl3a_cfg);
     sens_cyl3b.init(cyl3b_cfg);
 
+    // High-level assemblies
+    Conveyor::Config conv_cfg = { .belt_mm_per_rev = 0, .width_mm_per_rev = 4.0f };
+    machine_conveyor.init(&motor_conveyor, &motor_width,
+                          &sens_laser1, &sens_laser2, &sens_laser3,
+                          &smema_upstream, &smema_downstream,
+                          conv_cfg);
+
+    Head::Config head_init_cfg = { .mm_per_rev = 5.0f };
+    machine_head.init(&motor_head, &sens_head_home, head_init_cfg);
+
     // Wire up context
-    machine_context.conveyor = &motor_conveyor;
-    machine_context.width = &motor_width;
-    machine_context.head = &motor_head;
+    machine_context.conveyor = &machine_conveyor;
+    machine_context.head = &machine_head;
     machine_context.stopper = &cyl_stopper;
     machine_context.rfid = &cyl_rfid;
     machine_context.locker = &cyl_locker;
-    machine_context.smema = &smema_port;
-    machine_context.laser1 = &sens_laser1;
-    machine_context.laser2 = &sens_laser2;
-    machine_context.laser3 = &sens_laser3;
     machine_context.cyl1_a = &sens_cyl1a;
     machine_context.cyl1_b = &sens_cyl1b;
     machine_context.cyl2_a = &sens_cyl2a;
     machine_context.cyl2_b = &sens_cyl2b;
     machine_context.cyl3_a = &sens_cyl3a;
     machine_context.cyl3_b = &sens_cyl3b;
-    machine_context.head_home = &sens_head_home;
     machine_context.recipe = &default_recipe;
     machine_context.last_result = TestResult::NONE;
     machine_context.mode = OperatingMode::AUTO;

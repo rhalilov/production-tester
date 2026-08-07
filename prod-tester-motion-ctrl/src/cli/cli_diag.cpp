@@ -35,20 +35,20 @@ static int cmd_status(const struct shell *sh, size_t argc, char **argv)
     shell_print(sh, "");
     shell_print(sh, "=== Motors ===");
     shell_print(sh, "  Conveyor: pos=%d moving=%s homed=%s alm=%s",
-                ctx->conveyor->position(),
-                ctx->conveyor->isMoving() ? "YES" : "no",
-                ctx->conveyor->isHomed() ? "yes" : "n/a",
-                ctx->conveyor->inAlarm() ? "ALM!" : "ok");
+                ctx->conveyor->beltMotor()->position(),
+                ctx->conveyor->beltMotor()->isMoving() ? "YES" : "no",
+                ctx->conveyor->beltMotor()->isHomed() ? "yes" : "n/a",
+                ctx->conveyor->beltMotor()->inAlarm() ? "ALM!" : "ok");
     shell_print(sh, "  Width:    pos=%d moving=%s homed=%s alm=%s",
-                ctx->width->position(),
-                ctx->width->isMoving() ? "YES" : "no",
-                ctx->width->isHomed() ? "yes" : "no",
-                ctx->width->inAlarm() ? "ALM!" : "ok");
+                ctx->conveyor->widthMotor()->position(),
+                ctx->conveyor->widthMotor()->isMoving() ? "YES" : "no",
+                ctx->conveyor->widthMotor()->isHomed() ? "yes" : "no",
+                ctx->conveyor->widthMotor()->inAlarm() ? "ALM!" : "ok");
     shell_print(sh, "  Table:    pos=%d moving=%s homed=%s alm=%s",
-                ctx->head->position(),
-                ctx->head->isMoving() ? "YES" : "no",
+                ctx->head->motor()->position(),
+                ctx->head->motor()->isMoving() ? "YES" : "no",
                 ctx->head->isHomed() ? "yes" : "no",
-                ctx->head->inAlarm() ? "ALM!" : "ok");
+                ctx->head->motor()->inAlarm() ? "ALM!" : "ok");
     shell_print(sh, "");
     shell_print(sh, "=== Cylinders ===");
     const char *posnames[] = { "A", "B", "?" };
@@ -66,17 +66,17 @@ static int cmd_sensors(const struct shell *sh, size_t argc, char **argv)
 
     // Force a fresh physical read by polling
     component::Sensor *all[] = {
-        ctx->laser1, ctx->laser2, ctx->laser3, ctx->head_home,
+        ctx->conveyor->laser1(), ctx->conveyor->laser2(), ctx->conveyor->laser3(), ctx->head->homeSensor(),
         ctx->cyl1_a, ctx->cyl1_b, ctx->cyl2_a, ctx->cyl2_b,
         ctx->cyl3_a, ctx->cyl3_b
     };
     for (auto *s : all) { s->poll(); }
 
     shell_print(sh, "=== Sensors (raw pin state) ===");
-    shell_print(sh, "%-12s %s", "laser1", ctx->laser1->raw() ? "CLOSED" : "open");
-    shell_print(sh, "%-12s %s", "laser2", ctx->laser2->raw() ? "CLOSED" : "open");
-    shell_print(sh, "%-12s %s", "laser3", ctx->laser3->raw() ? "CLOSED" : "open");
-    shell_print(sh, "%-12s %s", "head_home", ctx->head_home->raw() ? "CLOSED" : "open");
+    shell_print(sh, "%-12s %s", "laser1", ctx->conveyor->laser1()->raw() ? "CLOSED" : "open");
+    shell_print(sh, "%-12s %s", "laser2", ctx->conveyor->laser2()->raw() ? "CLOSED" : "open");
+    shell_print(sh, "%-12s %s", "laser3", ctx->conveyor->laser3()->raw() ? "CLOSED" : "open");
+    shell_print(sh, "%-12s %s", "head_home", ctx->head->homeSensor()->raw() ? "CLOSED" : "open");
     shell_print(sh, "");
     shell_print(sh, "=== Inductive Sensors ===");
     shell_print(sh, "%-12s %s", "ind6", ctx->cyl1_a->raw() ? "CLOSED" : "open");
@@ -87,13 +87,13 @@ static int cmd_sensors(const struct shell *sh, size_t argc, char **argv)
     shell_print(sh, "%-12s %s", "ind5", ctx->cyl3_b->raw() ? "CLOSED" : "open");
     shell_print(sh, "");
     shell_print(sh, "=== Motor ALM ===");
-    shell_print(sh, "  Conveyor: %s", ctx->conveyor->inAlarm() ? "ALM!" : "ok");
-    shell_print(sh, "  Width:    %s", ctx->width->inAlarm() ? "ALM!" : "ok");
-    shell_print(sh, "  Head:     %s", ctx->head->inAlarm() ? "ALM!" : "ok");
+    shell_print(sh, "  Conveyor: %s", ctx->conveyor->beltMotor()->inAlarm() ? "ALM!" : "ok");
+    shell_print(sh, "  Width:    %s", ctx->conveyor->widthMotor()->inAlarm() ? "ALM!" : "ok");
+    shell_print(sh, "  Head:     %s", ctx->head->motor()->inAlarm() ? "ALM!" : "ok");
     shell_print(sh, "");
     shell_print(sh, "=== SMEMA ===");
-    shell_print(sh, "  Up BA (in):  %s", ctx->smema->boardAvailableIn() ? "HIGH" : "low");
-    shell_print(sh, "  Down MR (in): %s", ctx->smema->machineReadyIn() ? "HIGH" : "low");
+    shell_print(sh, "  Up BA (in):  %s", ctx->conveyor->upstream()->boardAvailable() ? "HIGH" : "low");
+    shell_print(sh, "  Down MR (in): %s", ctx->conveyor->downstream()->machineReady() ? "HIGH" : "low");
 
     return 0;
 }
@@ -114,26 +114,18 @@ static int cmd_pos(const struct shell *sh, size_t argc, char **argv)
     shell_print(sh, "=== Motor Positions ===");
 
     auto print_motor = [&](const char *name, component::StepperMotor *m) {
-        float mm_rev = m->config().mm_per_rev;
-        if (mm_rev > 0) {
-            float mm = (float)m->position() * mm_rev / (float)m->config().steps_per_rev;
-            shell_print(sh, "  %s: %d steps (%.2f mm) %s", name, m->position(), (double)mm,
-                        m->isHomed() ? "" : "[NOT HOMED]");
-        } else {
-            shell_print(sh, "  %s: %d steps %s", name, m->position(),
-                        m->isHomed() ? "" : "[NOT HOMED]");
-        }
+        shell_print(sh, "  %s: %d steps %s", name, m->position(),
+                    m->isHomed() ? "" : "[NOT HOMED]");
     };
 
-    print_motor("1 Conveyor", ctx->conveyor);
-    print_motor("2 Width", ctx->width);
-    print_motor("3 Head", ctx->head);
+    print_motor("1 Conveyor", ctx->conveyor->beltMotor());
+    print_motor("2 Width", ctx->conveyor->widthMotor());
+    print_motor("3 Head", ctx->head->motor());
 
     shell_print(sh, "");
-    float lim_mm = (float)ctx->head->config().soft_limit_min * 5.0f / (float)ctx->head->config().steps_per_rev;
-    shell_print(sh, "  Table soft limits: min=%d (%.2f mm) max=%d",
-                ctx->head->config().soft_limit_min, (double)lim_mm,
-                ctx->head->config().soft_limit_max);
+    shell_print(sh, "  Table soft limits: min=%d max=%d",
+                ctx->head->motor()->config().soft_limit_min,
+                ctx->head->motor()->config().soft_limit_max);
     return 0;
 }
 

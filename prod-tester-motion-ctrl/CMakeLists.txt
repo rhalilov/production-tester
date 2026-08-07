@@ -9,7 +9,10 @@ target_sources(app PRIVATE
     src/hal/gpio_pin.cpp
     src/components/stepper_motor.cpp
     src/components/cylinder.cpp
-    src/components/smema_port.cpp
+    src/components/smema_upstream.cpp
+    src/components/smema_downstream.cpp
+    src/components/conveyor.cpp
+    src/components/head.cpp
     src/components/sensor.cpp
     src/engine/engine.cpp
     src/engine/fault.cpp
