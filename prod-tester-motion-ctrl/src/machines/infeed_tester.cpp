@@ -447,18 +447,17 @@ static StepDef infeed_steps[] = {
     // Step 11: Table up to home
     { "head_up",
       [](Context &ctx) {
-          uint32_t rpm = ctx.head->motor()->config().home_rpm;
-          TRACE_ACT("head RUN +%urpm (up to home)", rpm);
-          ctx.head->motor()->run(rpm, MotionDir::POS);
-          TRACE_WAIT("head_home triggered");
-          ctx.wait_desc = "head_home triggered";
+          float target_mm = ctx.recipe->head_pos.guides_clear;
+          int32_t target = ctx.head->mmToSteps(target_mm);
+          uint32_t rpm = ctx.head->mmStoRpm(ctx.head->config().fast_speed);
+          TRACE_ACT("head GOTO %.1fmm (%d steps) @%urpm (guides_clear)",
+                    (double)target_mm, target, rpm);
+          ctx.head->motor()->goTo(target, rpm);
+          TRACE_WAIT("head move done");
+          ctx.wait_desc = "head move done";
       },
-      nullptr,
-      [](Context &ctx) {
-          TRACE_ACT("head STOP");
-          ctx.head->motor()->stop();
-      },
-      [](Context &ctx) -> bool { return ctx.head->atHome(); },
+      nullptr, nullptr,
+      [](Context &ctx) -> bool { return !ctx.head->isMoving(); },
       12, nullptr, 0
     },
 
