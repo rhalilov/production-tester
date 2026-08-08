@@ -9,6 +9,8 @@ class Head {
 public:
     struct Config {
         float mm_per_rev;
+        float fast_speed;
+        float slow_speed;
     };
 
     Head() : motor_(nullptr), home_sensor_(nullptr), cfg_{0} {}

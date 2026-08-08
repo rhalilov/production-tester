@@ -57,6 +57,12 @@ uint32_t Conveyor::beltMmStoRpm(float mm_s) const
     return (uint32_t)roundf(mm_s * 60.0f / cfg_.belt_mm_per_rev);
 }
 
+int32_t Conveyor::beltMmToSteps(float mm) const
+{
+    if (cfg_.belt_mm_per_rev <= 0.0f) return 0;
+    return (int32_t)(mm * (float)belt_->config().steps_per_rev / cfg_.belt_mm_per_rev);
+}
+
 int32_t Conveyor::widthMmToSteps(float mm) const
 {
     if (cfg_.width_mm_per_rev <= 0.0f) return 0;

@@ -46,15 +46,32 @@ DEFAULT_TCP_PORT = 5555
 _reader_paused = [False]
 
 
-def reader_thread(ser, running, tcp_clients, tcp_lock):
+_controller_ready = [True]
+_controller_rebooted = [False]
+
+
+def reader_thread(ser_holder, running, tcp_clients, tcp_lock):
     """Background thread that prints incoming serial data and forwards to TCP clients."""
     while running[0]:
         try:
+            ser = ser_holder[0]
+            if ser is None or not ser.is_open:
+                time.sleep(0.1)
+                continue
             if _reader_paused[0]:
                 time.sleep(0.05)
                 continue
             if ser.in_waiting:
                 data = ser.read(ser.in_waiting)
+                if b"Booting" in data or b"booting" in data:
+                    _controller_ready[0] = False
+                    _controller_rebooted[0] = True
+                    sys.stdout.write("\n[Controller] Reset detected\n")
+                    sys.stdout.flush()
+                if b"init complete" in data:
+                    _controller_ready[0] = True
+                    sys.stdout.write("[Controller] Ready\n")
+                    sys.stdout.flush()
                 text = data.decode(errors="replace")
                 sys.stdout.write(text)
                 sys.stdout.flush()
@@ -70,10 +87,10 @@ def reader_thread(ser, running, tcp_clients, tcp_lock):
             else:
                 time.sleep(0.02)
         except (OSError, serial.SerialException):
-            break
+            time.sleep(0.1)
 
 
-def tcp_client_handler(client_sock, addr, ser, running, tcp_clients, tcp_lock):
+def tcp_client_handler(client_sock, addr, ser_holder, running, tcp_clients, tcp_lock):
     """Handle a single TCP client: forward its lines to serial."""
     print(f"\n[TCP] Client connected: {addr}")
     with tcp_lock:
@@ -90,7 +107,9 @@ def tcp_client_handler(client_sock, addr, ser, running, tcp_clients, tcp_lock):
                     line, buf = buf.split(b"\n", 1)
                     line = line.strip()
                     if line:
-                        ser.write(line + b"\r\n")
+                        ser = ser_holder[0]
+                        if ser and ser.is_open:
+                            ser.write(line + b"\r\n")
                         time.sleep(0.05)
             except (OSError, ConnectionResetError):
                 break
@@ -102,7 +121,7 @@ def tcp_client_handler(client_sock, addr, ser, running, tcp_clients, tcp_lock):
         print(f"\n[TCP] Client disconnected: {addr}")
 
 
-def tcp_server_thread(ser, running, tcp_port, tcp_clients, tcp_lock):
+def tcp_server_thread(ser_holder, running, tcp_port, tcp_clients, tcp_lock):
     """TCP server that accepts connections and spawns handlers."""
     srv = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
@@ -114,7 +133,7 @@ def tcp_server_thread(ser, running, tcp_port, tcp_clients, tcp_lock):
         try:
             client, addr = srv.accept()
             t = threading.Thread(target=tcp_client_handler,
-                                 args=(client, addr, ser, running, tcp_clients, tcp_lock),
+                                 args=(client, addr, ser_holder, running, tcp_clients, tcp_lock),
                                  daemon=True)
             t.start()
         except socket.timeout:
@@ -176,20 +195,28 @@ def dump_config(ser, output_file):
     return True
 
 
-def console(ser):
+def console_loop(ser_holder, running):
     """Interactive console — read user input, send to serial."""
     print("--- Console active (type 'exit' or 'quit' to close, 'setup' for config menu) ---")
-    while True:
+    while running[0]:
         try:
             line = input()
             if line.strip().lower() in ("exit", "quit"):
                 print("\n--- Disconnected ---")
                 break
             if line.strip().lower() == "setup":
-                setup_menu(ser)
+                ser = ser_holder[0]
+                if ser and ser.is_open:
+                    setup_menu(ser)
+                else:
+                    print("[Serial] Not connected")
                 print("--- Console active (type 'exit' or 'quit' to close, 'setup' for config menu) ---")
                 continue
-            ser.write((line + "\r\n").encode())
+            ser = ser_holder[0]
+            if ser and ser.is_open:
+                ser.write((line + "\r\n").encode())
+            else:
+                print("[Serial] Not connected — waiting for reconnect...")
         except KeyboardInterrupt:
             print()
             continue
@@ -204,20 +231,35 @@ def console(ser):
 
 def send_and_capture(ser, cmd, timeout=2.0):
     """Send a command and capture response lines until silence."""
-    ser.reset_input_buffer()
-    ser.write((cmd + "\r\n").encode())
+    try:
+        if not ser or not ser.is_open:
+            return []
+        if not _controller_ready[0]:
+            return []
+        ser.reset_input_buffer()
+        ser.write((cmd + "\r\n").encode())
+    except (OSError, serial.SerialException):
+        return []
     lines = []
     deadline = time.time() + timeout
-    while time.time() < deadline:
-        if ser.in_waiting:
-            raw = ser.readline().decode(errors="replace").strip()
-            clean = re.sub(r'\x1b\[[0-9;]*m', '', raw)
-            clean = clean.replace('\ufffd', '')
-            if clean and clean != cmd:
-                lines.append(clean)
-            deadline = time.time() + 0.3
-        else:
-            time.sleep(0.02)
+    try:
+        while time.time() < deadline:
+            if ser.in_waiting:
+                raw = ser.readline().decode(errors="replace").strip()
+                clean = re.sub(r'\x1b\[[0-9;]*m', '', raw)
+                clean = clean.replace('\ufffd', '')
+                if "Booting Zephyr" in clean or "*** Booting" in clean:
+                    _controller_ready[0] = False
+                    _controller_rebooted[0] = True
+                elif "machine init complete" in clean and not _controller_ready[0]:
+                    _controller_ready[0] = True
+                if clean and clean != cmd:
+                    lines.append(clean)
+                deadline = time.time() + 0.3
+            else:
+                time.sleep(0.02)
+    except (OSError, serial.SerialException):
+        pass
     return lines
 
 
@@ -225,21 +267,43 @@ def _clear_screen():
     os.system("cls" if os.name == "nt" else "clear")
 
 
-def _get_key():
-    """Read a single key press (Windows). Returns the character or special key name."""
-    ch = msvcrt.getch()
-    if ch in (b'\x00', b'\xe0'):
-        ch2 = msvcrt.getch()
-        if ch2 == b'K':
-            return '<'
-        elif ch2 == b'M':
-            return '>'
-        elif ch2 == b'H':
-            return 'up'
-        elif ch2 == b'P':
-            return 'down'
-        return None
-    return ch.decode(errors="replace")
+def _check_serial_for_boot(ser):
+    """Read available serial data and check for boot patterns. Non-blocking."""
+    try:
+        n = ser.in_waiting
+        if n > 0:
+            data = ser.read(n)
+            if b"Booting" in data or b"booting" in data:
+                _controller_ready[0] = False
+                _controller_rebooted[0] = True
+            if b"init complete" in data:
+                _controller_ready[0] = True
+    except (OSError, serial.SerialException):
+        pass
+
+
+def _get_key(ser=None):
+    """Read a single key press (Windows). Checks serial for boot messages while waiting."""
+    while True:
+        if msvcrt.kbhit():
+            ch = msvcrt.getch()
+            if ch in (b'\x00', b'\xe0'):
+                ch2 = msvcrt.getch()
+                if ch2 == b'K':
+                    return '<'
+                elif ch2 == b'M':
+                    return '>'
+                elif ch2 == b'H':
+                    return 'up'
+                elif ch2 == b'P':
+                    return 'down'
+                return None
+            return ch.decode(errors="replace")
+        if ser:
+            _check_serial_for_boot(ser)
+            if _controller_rebooted[0]:
+                return None
+        time.sleep(0.02)
 
 
 def _print_header(title, path=None):
@@ -254,23 +318,24 @@ def _print_header(title, path=None):
 # --- Parameter Definitions ---
 
 CONVEYOR_PARAMS = [
-    ("Home Speed",      "cfg set conveyor home_rpm {v}",     1,    "mm/s"),
-    ("Accel Start",     "cfg set conveyor accel_start {v}",  1,    "mm/s"),
-    ("Accel Rate",      "cfg set conveyor accel_rate {v}",   5,    "mm/s2"),
-    ("Belt mm/rev",     "cfg set conveyor mm_per_rev {v}",   1.0,  "mm"),
+    ("Convey Speed",      "cfg set conveyor convey_speed {v}",      5,    "mm/s"),
+    ("Creep Speed",       "cfg set conveyor creep_speed {v}",       1,    "mm/s"),
+    ("Convey Out Speed",  "cfg set conveyor convey_out_speed {v}",  5,    "mm/s"),
+    ("Eject Speed",       "cfg set conveyor eject_speed {v}",       1,    "mm/s"),
+    ("Creep Distance",    "cfg set conveyor creep_distance {v}",    5.0,  "mm"),
+    ("Belt mm/rev",       "cfg set conveyor mm_per_rev {v}",        1.0,  "mm"),
+    ("Width mm/rev",      "cfg set width mm_per_rev {v}",           0.5,  "mm"),
 ]
 
 HEAD_PARAMS = [
-    ("Home Speed",      "cfg set head home_rpm {v}",        1,    "mm/s"),
-    ("Accel Start",     "cfg set head accel_start {v}",     1,    "mm/s"),
-    ("Accel Rate",      "cfg set head accel_rate {v}",      5,    "mm/s2"),
-    ("mm/rev",          "cfg set head mm_per_rev {v}",      0.5,  "mm"),
-    ("Safe Position",   "cfg set head safe_pos {v}",        100,  "steps"),
-    ("Guides Clear",    "cfg set head guides_clear {v}",    0.5,  "mm"),
-    ("Pins Touch",      "cfg set head pins_touch {v}",      0.5,  "mm"),
-    ("Pins Contact",    "cfg set head pins_contact {v}",    0.5,  "mm"),
-    ("Soft Limit Min",  "cfg set head limit_min {v}",       1.0,  "mm"),
-    ("Soft Limit Max",  "cfg set head limit_max {v}",       1.0,  "mm"),
+    ("Fast Speed",      "cfg set head fast_speed {v}",        1,    "mm/s"),
+    ("Slow Speed",      "cfg set head slow_speed {v}",        0.5,  "mm/s"),
+    ("mm/rev",          "cfg set head mm_per_rev {v}",        0.5,  "mm"),
+    ("Guides Clear",    "cfg set head guides_clear {v}",      0.5,  "mm"),
+    ("Pins Touch",      "cfg set head pins_touch {v}",        0.5,  "mm"),
+    ("Pins Contact",    "cfg set head pins_contact {v}",      0.5,  "mm"),
+    ("Soft Limit Min",  "cfg set head limit_min {v}",         1.0,  "mm"),
+    ("Soft Limit Max",  "cfg set head limit_max {v}",         1.0,  "mm"),
 ]
 
 WIDTH_PARAMS = [
@@ -313,15 +378,16 @@ def _parse_cfg_show(lines):
 def _get_current_value(cfg_data, param_name, cmd_template, unit):
     """Try to extract current value for a parameter from cfg show data."""
     key_map = {
-        "cfg set conveyor home_rpm": "home_rpm",
-        "cfg set conveyor accel_start": "accel_start_rpm",
-        "cfg set conveyor accel_rate": "accel_rpm_s",
+        "cfg set conveyor convey_speed": "convey_speed",
+        "cfg set conveyor creep_speed": "creep_speed",
+        "cfg set conveyor convey_out_speed": "convey_out_speed",
+        "cfg set conveyor eject_speed": "eject_speed",
+        "cfg set conveyor creep_distance": "creep_distance",
         "cfg set conveyor mm_per_rev": "belt_mm_per_rev",
-        "cfg set head home_rpm": "home_rpm",
-        "cfg set head accel_start": "accel_start_rpm",
-        "cfg set head accel_rate": "accel_rpm_s",
+        "cfg set width mm_per_rev": "width_mm_per_rev",
+        "cfg set head fast_speed": "fast_speed",
+        "cfg set head slow_speed": "slow_speed",
         "cfg set head mm_per_rev": "mm_per_rev",
-        "cfg set head safe_pos": "safe_position",
         "cfg set head guides_clear": "guides_clear",
         "cfg set head pins_touch": "pins_touch",
         "cfg set head pins_contact": "pins_contact",
@@ -330,7 +396,6 @@ def _get_current_value(cfg_data, param_name, cmd_template, unit):
         "cfg set width home_rpm": "home_rpm",
         "cfg set width accel_start": "accel_start_rpm",
         "cfg set width accel_rate": "accel_rpm_s",
-        "cfg set width mm_per_rev": "width_mm_per_rev",
         "cfg set width safe_pos": "safe_position",
         "cfg set width limit_min": "soft_limit_min",
         "cfg set width limit_max": "soft_limit_max",
@@ -343,14 +408,14 @@ def _get_current_value(cfg_data, param_name, cmd_template, unit):
         if not num:
             return val
         raw = float(num.group(0))
-        # Convert RPM to mm/s if the unit asks for it
-        if unit in ("mm/s", "mm/s2"):
+        # Width motor still uses RPM in firmware, convert to mm/s
+        if unit in ("mm/s", "mm/s2") and "width" in base_cmd:
             motor = _motor_from_cmd(base_cmd)
             mpr = _get_mm_per_rev(cfg_data, motor)
             if mpr > 0:
                 converted = raw * mpr / 60.0
                 return f"{converted:.1f}"
-            return f"N/A"
+            return "N/A"
         # For steps-based limits on linear axes, show as mm
         if unit == "mm" and field in ("soft_limit_min", "soft_limit_max"):
             mm_match = re.search(r'\(([-\d.]+)\s*mm\)', val)
@@ -424,25 +489,64 @@ def _read_current_values(ser, node_idx):
 def _show_motor_params(ser, node_idx, params, level_name):
     """Display motor parameters and allow editing."""
     while True:
+        if _controller_rebooted[0]:
+            _wait_and_restore(ser)
         cfg_data = _read_current_values(ser, node_idx)
         _clear_screen()
         node_name = NODES[node_idx][0]
         _print_header(f"{node_name} Parameters", f"{level_name} / {node_name}")
+
+        if node_idx == 1:
+            head_pos = _get_head_pos_mm(ser)
+            if head_pos is not None:
+                print(f"  Head Position: {head_pos:.2f} mm\n")
+            else:
+                print(f"  Head Position: ? mm\n")
 
         for i, (name, cmd, step, unit) in enumerate(params):
             val = _get_current_value(cfg_data, name, cmd, unit)
             print(f"  {i+1:2d}. {name:<20s} = {val} {unit}")
 
         print(f"\n  [1-{len(params)}] Select parameter")
+        if node_idx == 1:
+            if _board_clamped[0]:
+                print("  [c] Release board")
+            else:
+                print("  [c] Clamp board")
+            print("  [h] Home head")
+        print("  [d] Restore defaults")
         print("  [s] Save to flash")
         print("  [q] Back\n")
 
-        key = _get_key()
+        key = _get_key(ser)
         if key in ('q', 'Q', '\x1b'):
+            if node_idx == 1:
+                _unclamp_board(ser)
             return
+        if key in ('d', 'D'):
+            send_and_capture(ser, "cfg defaults")
+            print("  >> Defaults restored")
+            time.sleep(1)
+            continue
         if key in ('s', 'S'):
             send_and_capture(ser, "cfg save")
             print("  >> Saved to flash!")
+            time.sleep(1)
+            continue
+
+        if node_idx == 1 and key in ('c', 'C'):
+            if _board_clamped[0]:
+                _unclamp_board(ser)
+                print("  >> Board released")
+            else:
+                _clamp_board_sequence(ser, level_name)
+            time.sleep(0.5)
+            continue
+
+        if node_idx == 1 and key in ('h', 'H'):
+            send_and_capture(ser, "manual motor 3 on")
+            send_and_capture(ser, "manual motor 3 home", timeout=15)
+            print("  >> Head homed")
             time.sleep(1)
             continue
 
@@ -452,56 +556,301 @@ def _show_motor_params(ser, node_idx, params, level_name):
                 _adjust_param(ser, params[idx], node_idx, level_name)
 
 
+_board_clamped = [False]
+
+
+def _clamp_board_sequence(ser, level_name):
+    """Interactive board clamping sequence before head position adjustment."""
+    _clear_screen()
+    _print_header("Board Clamping", f"{level_name} / Head")
+    print("  Step 1: Raising stopper...")
+    send_and_capture(ser, "manual cylinder stopper a", timeout=5)
+    print("  >> Stopper UP\n")
+    print("  Step 2: Place the board against the stopper")
+    print("          Press any key when ready (q to cancel)...")
+    key = _get_key(ser)
+    if key in ('q', 'Q', '\x1b'):
+        return False
+
+    _clear_screen()
+    _print_header("Board Clamping", f"{level_name} / Head")
+    print("  Step 3: Raising RFID...")
+    send_and_capture(ser, "manual cylinder rfid a", timeout=5)
+    print("  >> RFID UP\n")
+    print("  Step 4: Clamping board (locker)...")
+    send_and_capture(ser, "manual cylinder locker b", timeout=5)
+    print("  >> Board CLAMPED\n")
+    print("  Board is secured. Press any key to continue...")
+    _get_key(ser)
+    _board_clamped[0] = True
+    return True
+
+
+def _unclamp_board(ser):
+    """Release board after head position adjustment."""
+    if _board_clamped[0]:
+        send_and_capture(ser, "manual cylinder locker a", timeout=5)
+        send_and_capture(ser, "manual cylinder rfid b", timeout=5)
+        send_and_capture(ser, "manual cylinder stopper b", timeout=5)
+        _board_clamped[0] = False
+
+
+def _adjust_head_position(ser, param_def, node_idx, level_name, go_on_enter=True):
+    """Adjust head position param by physically moving the head."""
+    name, cmd_template, step, unit = param_def
+    node_name = NODES[node_idx][0]
+
+    cfg_data = _read_current_values(ser, node_idx)
+    current = _get_current_value(cfg_data, name, cmd_template, unit)
+    try:
+        target_pos = float(current)
+    except (ValueError, TypeError):
+        target_pos = 0.0
+
+    send_and_capture(ser, "manual motor 3 on")
+
+    actual_pos = _get_head_pos_mm(ser)
+    if actual_pos is None:
+        actual_pos = 0.0
+
+    if go_on_enter:
+        delta = target_pos - actual_pos
+        if abs(delta) > 0.01:
+            send_and_capture(ser, f"manual motor 3 go_mm {delta} 100", timeout=10)
+    else:
+        target_pos = actual_pos
+
+    while True:
+        if _controller_rebooted[0]:
+            _wait_and_restore(ser)
+            return
+
+        _clear_screen()
+        _print_header(f"Adjust: {name}", f"{level_name} / {node_name} / {name}")
+        print(f"  Position:  {target_pos:.2f} mm")
+        print(f"  Step size: {step} mm")
+        print()
+        print("  [Up]           Move UP by step (+)")
+        print("  [Down]         Move DOWN by step (-)")
+        print("  [<] / [Left]   Decrease step size")
+        print("  [>] / [Right]  Increase step size")
+        print("  [v]            Enter position directly")
+        print("  [h]            Home head (reset to 0)")
+        print("  [q] / [Esc]    Save & Back\n")
+
+        key = _get_key(ser)
+        if key is None and _controller_rebooted[0]:
+            continue
+
+        if key in ('q', 'Q', '\x1b'):
+            cmd = cmd_template.format(v=target_pos)
+            send_and_capture(ser, cmd)
+            return
+
+        if key == 'up':
+            delta = step
+            target_pos += delta
+            send_and_capture(ser, f"manual motor 3 go_mm {delta} 100", timeout=5)
+            continue
+        if key == 'down':
+            delta = -step
+            target_pos += delta
+            send_and_capture(ser, f"manual motor 3 go_mm {delta} 100", timeout=5)
+            continue
+        if key == '<':
+            step = max(0.1, step - 0.1)
+            step = round(step, 1)
+            continue
+        if key == '>':
+            step = round(step + 0.1, 1)
+            continue
+        if key in ('h', 'H'):
+            send_and_capture(ser, "manual motor 3 home", timeout=15)
+            target_pos = 0.0
+            continue
+        if key == 'v' or key == 'V':
+            print(f"  Enter position (mm): ", end="", flush=True)
+            val_str = ""
+            while True:
+                ch = _get_key(ser)
+                if ch is None:
+                    break
+                if ch == '\r' or ch == '\n':
+                    break
+                if ch == '\x1b':
+                    val_str = ""
+                    break
+                if ch == '\x08':
+                    if val_str:
+                        val_str = val_str[:-1]
+                        print("\b \b", end="", flush=True)
+                    continue
+                if ch and (ch.isdigit() or ch in '.-'):
+                    val_str += ch
+                    print(ch, end="", flush=True)
+            print()
+            if val_str:
+                try:
+                    new_pos = float(val_str)
+                    delta = new_pos - target_pos
+                    send_and_capture(ser, f"manual motor 3 go_mm {delta} 100", timeout=5)
+                    target_pos = new_pos
+                except ValueError:
+                    print("  Invalid value!")
+                    time.sleep(1)
+
+
+def _get_head_pos_mm(ser):
+    """Read current head position in mm via a zero-distance go_mm."""
+    lines = send_and_capture(ser, "manual motor 3 go_mm 0 1", timeout=2.0)
+    for line in lines:
+        m = re.search(r'([-\d.]+)\s*mm\)', line)
+        if m:
+            return float(m.group(1))
+    return None
+
+
 def _adjust_param(ser, param_def, node_idx, level_name):
     """Adjust a single parameter: direct value or < / > stepping."""
     name, cmd_template, step, unit = param_def
     base_cmd = cmd_template.split("{v}")[0].strip()
     motor = _motor_from_cmd(base_cmd)
+
+    # Head position params — special mode with physical movement
+    is_head_pos = motor == "head" and name in ("Guides Clear", "Pins Touch", "Pins Contact")
+    is_head_limit = motor == "head" and name in ("Soft Limit Min", "Soft Limit Max")
+    if is_head_pos or is_head_limit:
+        return _adjust_head_position(ser, param_def, node_idx, level_name, go_on_enter=is_head_pos)
+
     node_name = NODES[node_idx][0]
+    needs_rpm_conv = unit in ("mm/s", "mm/s2") and motor == "width"
+    is_speed = unit in ("mm/s", "rpm")
+    is_head_mm = motor == "head" and unit == "mm"
+    motor_idx = {"conveyor": "1", "width": "2", "head": "3"}.get(motor, "1")
+    motor_running = False
+
+    def _apply_speed(mm_s, cfg_data, restart=False):
+        """Send run command to motor at given mm/s speed."""
+        try:
+            if needs_rpm_conv:
+                m = _get_mm_per_rev(cfg_data, motor)
+                rpm = mm_s * 60.0 / m if m > 0 else mm_s
+            elif motor in ("conveyor", "head"):
+                m = _get_mm_per_rev(cfg_data, motor)
+                rpm = mm_s * 60.0 / m if m > 0 else mm_s
+            else:
+                rpm = mm_s
+            if restart:
+                send_and_capture(ser, f"manual motor {motor_idx} stop")
+            send_and_capture(ser, f"manual motor {motor_idx} run {int(rpm)} fwd")
+        except (ValueError, TypeError, ZeroDivisionError):
+            pass
 
     while True:
+        if _controller_rebooted[0]:
+            motor_running = False
+            _wait_and_restore(ser)
+
         cfg_data = _read_current_values(ser, node_idx)
-        mpr = _get_mm_per_rev(cfg_data, motor)
-        is_linear = unit in ("mm/s", "mm/s2") and mpr > 0
+        mpr = _get_mm_per_rev(cfg_data, motor) if needs_rpm_conv else 0
         current = _get_current_value(cfg_data, name, cmd_template, unit)
+
+        head_pos = None
+        if is_head_mm:
+            head_pos = _get_head_pos_mm(ser)
 
         _clear_screen()
         _print_header(f"Adjust: {name}", f"{level_name} / {node_name} / {name}")
         print(f"  Current value: {current} {unit}")
+        if head_pos is not None:
+            print(f"  Head position: {head_pos:.2f} mm")
         print(f"  Step size:     {step} {unit}")
+        if is_speed and motor_running:
+            print(f"  Motor:         RUNNING")
         print()
         print("  [<] / [Left]   Decrease by step")
         print("  [>] / [Right]  Increase by step")
+        print("  [Up] / [Down]  Increase / Decrease step size")
         print("  [v]            Enter value directly")
+        if is_speed:
+            print("  [r]            Run motor    [x] Stop motor")
+        if is_head_mm:
+            print("  [g]            Go to current value")
         print("  [q] / [Esc]    Back\n")
 
-        key = _get_key()
+        key = _get_key(ser)
+        if key is None and _controller_rebooted[0]:
+            motor_running = False
+            continue
         if key in ('q', 'Q', '\x1b'):
+            if is_speed and motor_running:
+                send_and_capture(ser, f"manual motor {motor_idx} stop")
+                motor_running = False
             return
+
+        if is_speed and key in ('r', 'R'):
+            try:
+                _apply_speed(float(current), cfg_data)
+                motor_running = True
+            except (ValueError, TypeError):
+                pass
+            continue
+        if is_speed and key in ('x', 'X'):
+            send_and_capture(ser, f"manual motor {motor_idx} stop")
+            motor_running = False
+            continue
+
+        if is_head_mm and key in ('g', 'G'):
+            try:
+                target = float(current)
+                cur = head_pos if head_pos is not None else 0
+                delta = target - cur
+                send_and_capture(ser, f"manual motor 3 go_mm {delta} 100", timeout=10)
+            except (ValueError, TypeError):
+                pass
+            motor_running = False
+            continue
+
+        if key == 'up':
+            step = step * 2 if isinstance(step, float) else step + 1
+            step = round(step, 2)
+            continue
+        if key == 'down':
+            if isinstance(step, float):
+                step = max(0.1, round(step / 2, 2))
+            else:
+                step = max(1, step - 1)
+            continue
+
+        new_mm_s = None
 
         if key == '<':
             try:
-                new_display = float(current) - step
-                hw_val = new_display * 60.0 / mpr if is_linear else new_display
-                if is_linear:
-                    hw_val = int(round(hw_val))
+                new_val = float(current) - step
+                if needs_rpm_conv and mpr > 0:
+                    hw_val = int(round(new_val * 60.0 / mpr))
                 elif step == int(step) and '.' not in str(current):
-                    hw_val = int(hw_val)
+                    hw_val = int(new_val)
+                else:
+                    hw_val = new_val
                 cmd = cmd_template.format(v=hw_val)
                 send_and_capture(ser, cmd)
+                new_mm_s = new_val
             except (ValueError, TypeError):
                 pass
 
         elif key == '>':
             try:
-                new_display = float(current) + step
-                hw_val = new_display * 60.0 / mpr if is_linear else new_display
-                if is_linear:
-                    hw_val = int(round(hw_val))
+                new_val = float(current) + step
+                if needs_rpm_conv and mpr > 0:
+                    hw_val = int(round(new_val * 60.0 / mpr))
                 elif step == int(step) and '.' not in str(current):
-                    hw_val = int(hw_val)
+                    hw_val = int(new_val)
+                else:
+                    hw_val = new_val
                 cmd = cmd_template.format(v=hw_val)
                 send_and_capture(ser, cmd)
+                new_mm_s = new_val
             except (ValueError, TypeError):
                 pass
 
@@ -509,7 +858,9 @@ def _adjust_param(ser, param_def, node_idx, level_name):
             print(f"  Enter new value ({unit}): ", end="", flush=True)
             val_str = ""
             while True:
-                ch = _get_key()
+                ch = _get_key(ser)
+                if ch is None:
+                    break
                 if ch == '\r' or ch == '\n':
                     break
                 if ch == '\x1b':
@@ -527,16 +878,21 @@ def _adjust_param(ser, param_def, node_idx, level_name):
             if val_str:
                 try:
                     val = float(val_str)
-                    hw_val = val * 60.0 / mpr if is_linear else val
-                    if is_linear:
-                        hw_val = int(round(hw_val))
+                    if needs_rpm_conv and mpr > 0:
+                        hw_val = int(round(val * 60.0 / mpr))
                     elif step == int(step) and '.' not in val_str:
-                        hw_val = int(hw_val)
+                        hw_val = int(val)
+                    else:
+                        hw_val = val
                     cmd = cmd_template.format(v=hw_val)
                     send_and_capture(ser, cmd)
+                    new_mm_s = val
                 except ValueError:
                     print("  Invalid value!")
                     time.sleep(1)
+
+        if is_speed and motor_running and new_mm_s is not None:
+            _apply_speed(new_mm_s, cfg_data, restart=True)
 
 
 def _show_sensors(ser, level_name):
@@ -568,7 +924,7 @@ def _show_sensors(ser, level_name):
         print(f"\n  [1-{len(SENSOR_NAMES)}] Toggle polarity")
         print("  [q] Back\n")
 
-        key = _get_key()
+        key = _get_key(ser)
         if key in ('q', 'Q', '\x1b'):
             return
         if key and key.isdigit():
@@ -595,17 +951,17 @@ def _show_cylinders(ser, level_name):
         print("  [n] Rename cylinder")
         print("  [q] Back\n")
 
-        key = _get_key()
+        key = _get_key(ser)
         if key in ('q', 'Q', '\x1b'):
             return
         if key == 'f':
             print("  Cylinder (1=stopper, 2=rfid, 3=locker): ", end="", flush=True)
-            k = _get_key()
+            k = _get_key(ser)
             if k in ('1', '2', '3'):
                 cyl = CYLINDER_NAMES[int(k)-1]
                 print(f"{cyl}")
                 print("  Position (a/b): ", end="", flush=True)
-                p = _get_key()
+                p = _get_key(ser)
                 if p in ('a', 'b'):
                     print(p)
                     send_and_capture(ser, f"manual cylinder {cyl} {p}")
@@ -630,7 +986,7 @@ def _show_smema(ser, level_name):
         print("  [0] All OFF")
         print("  [q] Back\n")
 
-        key = _get_key()
+        key = _get_key(ser)
         if key in ('q', 'Q', '\x1b'):
             send_and_capture(ser, "manual smema off")
             return
@@ -659,6 +1015,25 @@ def setup_menu(ser):
         _reader_paused[0] = False
 
 
+_unlock_cmd = [None]
+
+
+def _wait_and_restore(ser):
+    """Wait for controller to boot and re-send unlock command."""
+    print("\n  >> Controller rebooted — waiting for ready...")
+    deadline = time.time() + 15
+    while not _controller_ready[0] and time.time() < deadline:
+        _check_serial_for_boot(ser)
+        time.sleep(0.05)
+    _controller_rebooted[0] = False
+    time.sleep(0.5)
+    ser.reset_input_buffer()
+    if _unlock_cmd[0]:
+        send_and_capture(ser, _unlock_cmd[0])
+    print("  >> Restored session")
+    time.sleep(0.5)
+
+
 def _setup_menu_inner(ser):
     """Internal setup menu logic."""
     # Level selection
@@ -669,21 +1044,25 @@ def _setup_menu_inner(ser):
     print("  2. Factory")
     print("  q. Cancel\n")
 
-    key = _get_key()
+    key = _get_key(ser)
     if key in ('q', 'Q', '\x1b'):
         return
 
     if key == '1':
-        send_and_capture(ser, "cfg unlock proc_eng")
+        _unlock_cmd[0] = "cfg unlock proc_eng"
+        send_and_capture(ser, _unlock_cmd[0])
         level_name = "Engineering"
     elif key == '2':
-        send_and_capture(ser, "cfg unlock factory")
+        _unlock_cmd[0] = "cfg unlock factory"
+        send_and_capture(ser, _unlock_cmd[0])
         level_name = "Factory"
     else:
         return
 
     # Node selection loop
     while True:
+        if _controller_rebooted[0]:
+            _wait_and_restore(ser)
         _clear_screen()
         _print_header("Select Node", level_name)
         for i, (name, _) in enumerate(NODES):
@@ -691,9 +1070,10 @@ def _setup_menu_inner(ser):
         print("\n  [s] Save to flash")
         print("  [q] Exit setup\n")
 
-        key = _get_key()
+        key = _get_key(ser)
         if key in ('q', 'Q', '\x1b'):
             send_and_capture(ser, "cfg lock")
+            _unlock_cmd[0] = None
             return
         if key in ('s', 'S'):
             send_and_capture(ser, "cfg save")
@@ -827,23 +1207,24 @@ def main():
         ser.close()
         return
 
+    ser_holder = [ser]
     running = [True]
     tcp_clients = []
     tcp_lock = threading.Lock()
 
     reader = threading.Thread(target=reader_thread,
-                              args=(ser, running, tcp_clients, tcp_lock), daemon=True)
+                              args=(ser_holder, running, tcp_clients, tcp_lock), daemon=True)
     reader.start()
 
     tcp_srv = threading.Thread(target=tcp_server_thread,
-                               args=(ser, running, tcp_port, tcp_clients, tcp_lock), daemon=True)
+                               args=(ser_holder, running, tcp_port, tcp_clients, tcp_lock), daemon=True)
     tcp_srv.start()
 
     try:
         if config_file:
             send_config(ser, config_file, delay_ms)
 
-        console(ser)
+        console_loop(ser_holder, running)
     finally:
         running[0] = False
         ser.close()

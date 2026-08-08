@@ -12,6 +12,11 @@ public:
     struct Config {
         float belt_mm_per_rev;
         float width_mm_per_rev;
+        float convey_speed;
+        float creep_speed;
+        float convey_out_speed;
+        float eject_speed;
+        float creep_distance;
     };
 
     Conveyor() : belt_(nullptr), width_(nullptr),
@@ -53,6 +58,7 @@ public:
 
     // Conversions
     uint32_t beltMmStoRpm(float mm_s) const;
+    int32_t beltMmToSteps(float mm) const;
     int32_t widthMmToSteps(float mm) const;
     float widthStepsToMm(int32_t steps) const;
 

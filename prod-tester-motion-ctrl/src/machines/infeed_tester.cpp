@@ -287,8 +287,9 @@ static StepDef infeed_steps[] = {
       [](Context &ctx) {
           TRACE_ACT("smema_mr_out=HIGH");
           ctx.conveyor->upstream()->setMachineReady(true);
-          TRACE_ACT("conveyor RUN +%urpm", ctx.recipe->motor_presets[1].rpm);
-          ctx.conveyor->beltMotor()->run(ctx.recipe->motor_presets[1].rpm, MotionDir::POS);
+          uint32_t rpm = ctx.conveyor->beltMmStoRpm(ctx.conveyor->config().convey_speed);
+          TRACE_ACT("conveyor RUN +%urpm (%.1fmm/s)", rpm, (double)ctx.conveyor->config().convey_speed);
+          ctx.conveyor->beltMotor()->run(rpm, MotionDir::POS);
           TRACE_WAIT("laser1 triggered");
           ctx.wait_desc = "laser1 triggered";
       },
@@ -320,8 +321,9 @@ static StepDef infeed_steps[] = {
     // Step 3: Convey to near position (laser2)
     { "convey_in",
       [](Context &ctx) {
-          TRACE_ACT("conveyor RUN +%urpm", ctx.recipe->motor_presets[1].rpm);
-          ctx.conveyor->beltMotor()->run(ctx.recipe->motor_presets[1].rpm, MotionDir::POS);
+          uint32_t rpm = ctx.conveyor->beltMmStoRpm(ctx.conveyor->config().convey_speed);
+          TRACE_ACT("conveyor RUN +%urpm (%.1fmm/s)", rpm, (double)ctx.conveyor->config().convey_speed);
+          ctx.conveyor->beltMotor()->run(rpm, MotionDir::POS);
           TRACE_WAIT("laser2 triggered");
           ctx.wait_desc = "laser2 triggered";
       },
@@ -350,9 +352,13 @@ static StepDef infeed_steps[] = {
     // Step 5: Creep into stopper
     { "creep",
       [](Context &ctx) {
-          TRACE_ACT("conveyor GO %d steps @%urpm",
-                    ctx.recipe->motor_presets[2].steps, ctx.recipe->motor_presets[2].rpm);
-          ctx.conveyor->beltMotor()->go(ctx.recipe->motor_presets[2].steps, ctx.recipe->motor_presets[2].rpm);
+          int32_t steps = ctx.conveyor->beltMmToSteps(ctx.conveyor->config().creep_distance);
+          uint32_t rpm = ctx.conveyor->beltMmStoRpm(ctx.conveyor->config().creep_speed);
+          TRACE_ACT("conveyor GO %d steps @%urpm (%.1fmm @%.1fmm/s)",
+                    steps, rpm,
+                    (double)ctx.conveyor->config().creep_distance,
+                    (double)ctx.conveyor->config().creep_speed);
+          ctx.conveyor->beltMotor()->go(steps, rpm);
           TRACE_WAIT("conveyor move done");
           ctx.wait_desc = "conveyor move done";
       },
@@ -366,10 +372,11 @@ static StepDef infeed_steps[] = {
       [](Context &ctx) {
           float target_mm = ctx.recipe->head_pos.pins_touch;
           int32_t target = ctx.head->mmToSteps(target_mm);
-          TRACE_ACT("head GOTO %.1fmm (%d steps) @%urpm",
-                    (double)target_mm, target,
-                    ctx.recipe->motor_presets[3].rpm);
-          ctx.head->motor()->goTo(target, ctx.recipe->motor_presets[3].rpm);
+          uint32_t rpm = ctx.head->mmStoRpm(ctx.head->config().fast_speed);
+          TRACE_ACT("head GOTO %.1fmm (%d steps) @%urpm (%.1fmm/s)",
+                    (double)target_mm, target, rpm,
+                    (double)ctx.head->config().fast_speed);
+          ctx.head->motor()->goTo(target, rpm);
           TRACE_WAIT("head move done");
           ctx.wait_desc = "head move done";
       },
@@ -383,10 +390,11 @@ static StepDef infeed_steps[] = {
       [](Context &ctx) {
           float target_mm = ctx.recipe->head_pos.pins_contact;
           int32_t target = ctx.head->mmToSteps(target_mm);
-          TRACE_ACT("head GOTO %.1fmm (%d steps) @%urpm",
-                    (double)target_mm, target,
-                    ctx.recipe->motor_presets[4].rpm);
-          ctx.head->motor()->goTo(target, ctx.recipe->motor_presets[4].rpm);
+          uint32_t rpm = ctx.head->mmStoRpm(ctx.head->config().slow_speed);
+          TRACE_ACT("head GOTO %.1fmm (%d steps) @%urpm (%.1fmm/s)",
+                    (double)target_mm, target, rpm,
+                    (double)ctx.head->config().slow_speed);
+          ctx.head->motor()->goTo(target, rpm);
           TRACE_WAIT("head move done");
           ctx.wait_desc = "head move done";
       },
@@ -496,8 +504,9 @@ static StepDef infeed_steps[] = {
     // Step 15: Convey out
     { "convey_out",
       [](Context &ctx) {
-          TRACE_ACT("conveyor RUN +%urpm", ctx.recipe->motor_presets[5].rpm);
-          ctx.conveyor->beltMotor()->run(ctx.recipe->motor_presets[5].rpm, MotionDir::POS);
+          uint32_t rpm = ctx.conveyor->beltMmStoRpm(ctx.conveyor->config().convey_out_speed);
+          TRACE_ACT("conveyor RUN +%urpm (%.1fmm/s)", rpm, (double)ctx.conveyor->config().convey_out_speed);
+          ctx.conveyor->beltMotor()->run(rpm, MotionDir::POS);
           TRACE_WAIT("laser3 triggered");
           ctx.wait_desc = "laser3 triggered";
       },
@@ -538,8 +547,9 @@ static StepDef infeed_steps[] = {
     // Step 17: Eject — run until laser3 clears
     { "eject",
       [](Context &ctx) {
-          TRACE_ACT("conveyor RUN +%urpm (eject)", ctx.recipe->motor_presets[6].rpm);
-          ctx.conveyor->beltMotor()->run(ctx.recipe->motor_presets[6].rpm, MotionDir::POS);
+          uint32_t rpm = ctx.conveyor->beltMmStoRpm(ctx.conveyor->config().eject_speed);
+          TRACE_ACT("conveyor RUN +%urpm (eject, %.1fmm/s)", rpm, (double)ctx.conveyor->config().eject_speed);
+          ctx.conveyor->beltMotor()->run(rpm, MotionDir::POS);
           TRACE_WAIT("laser3 released");
           ctx.wait_desc = "laser3 released";
       },
@@ -612,13 +622,25 @@ int machine_init(void)
     sens_cyl3b.init(cyl3b_cfg);
 
     // High-level assemblies
-    Conveyor::Config conv_cfg = { .belt_mm_per_rev = 1.0f, .width_mm_per_rev = 4.0f };
+    Conveyor::Config conv_cfg = {
+        .belt_mm_per_rev = 1.0f,
+        .width_mm_per_rev = 4.0f,
+        .convey_speed = 167.0f,
+        .creep_speed = 42.0f,
+        .convey_out_speed = 167.0f,
+        .eject_speed = 84.0f,
+        .creep_distance = 125.0f,
+    };
     machine_conveyor.init(&motor_conveyor, &motor_width,
                           &sens_laser1, &sens_laser2, &sens_laser3,
                           &smema_upstream, &smema_downstream,
                           conv_cfg);
 
-    Head::Config head_init_cfg = { .mm_per_rev = 5.0f };
+    Head::Config head_init_cfg = {
+        .mm_per_rev = 5.0f,
+        .fast_speed = 16.7f,
+        .slow_speed = 3.3f,
+    };
     machine_head.init(&motor_head, &sens_head_home, head_init_cfg);
 
     // Wire up context
