@@ -35,9 +35,12 @@ void StepperMotor::stepperEventCb(const struct device *dev,
                                    enum stepper_ctrl_event event, void *ud)
 {
     auto *self = static_cast<StepperMotor *>(ud);
-    if (event == STEPPER_CTRL_EVENT_STEPS_COMPLETED ||
-        event == STEPPER_CTRL_EVENT_STOPPED) {
+    if (event == STEPPER_CTRL_EVENT_STEPS_COMPLETED) {
         self->onMoveComplete();
+    } else if (event == STEPPER_CTRL_EVENT_STOPPED) {
+        if (self->pending_steps_ != 0) {
+            self->onMoveComplete();
+        }
     }
 }
 

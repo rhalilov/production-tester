@@ -282,9 +282,11 @@ static StepDef infeed_steps[] = {
       1, nullptr, 0
     },
 
-    // Step 1: Request board — signal ready + run conveyor, wait for laser1
+    // Step 1: Request board — signal ready + raise stopper + run conveyor, wait for laser1
     { "request",
       [](Context &ctx) {
+          TRACE_ACT("stopper -> POS_A");
+          ctx.stopper->goTo(CylPosition::POS_A);
           TRACE_ACT("smema_mr_out=HIGH");
           ctx.conveyor->upstream()->setMachineReady(true);
           uint32_t rpm = ctx.conveyor->beltMmStoRpm(ctx.conveyor->config().convey_speed);
@@ -336,38 +338,33 @@ static StepDef infeed_steps[] = {
       4, nullptr, 0
     },
 
-    // Step 4: Arm stopper
-    { "arm_stopper",
-      [](Context &ctx) {
-          TRACE_ACT("stopper -> POS_A");
-          ctx.stopper->goTo(CylPosition::POS_A);
-          TRACE_WAIT("stopper at POS_A");
-          ctx.wait_desc = "stopper at POS_A";
-      },
-      nullptr, nullptr,
-      [](Context &ctx) -> bool { return ctx.stopper->currentPos() == CylPosition::POS_A; },
-      5, nullptr, 0
-    },
-
-    // Step 5: Creep into stopper
+    // Step 4: Creep into stopper
     { "creep",
       [](Context &ctx) {
+          ctx.conveyor->beltMotor()->stop();
+          k_msleep(100);
           int32_t steps = ctx.conveyor->beltMmToSteps(ctx.conveyor->config().creep_distance);
           uint32_t rpm = ctx.conveyor->beltMmStoRpm(ctx.conveyor->config().creep_speed);
           TRACE_ACT("conveyor GO %d steps @%urpm (%.1fmm @%.1fmm/s)",
                     steps, rpm,
                     (double)ctx.conveyor->config().creep_distance,
                     (double)ctx.conveyor->config().creep_speed);
-          ctx.conveyor->beltMotor()->go(steps, rpm);
+          auto err = ctx.conveyor->beltMotor()->startGo(steps, rpm);
+          if (err != component::StepperMotor::Error::OK) {
+              TRACE_ACT("startGo ERROR: %d", (int)err);
+          }
           TRACE_WAIT("conveyor move done");
           ctx.wait_desc = "conveyor move done";
       },
-      nullptr, nullptr,
+      nullptr,
+      [](Context &ctx) {
+          ctx.conveyor->beltMotor()->stop();
+      },
       [](Context &ctx) -> bool { return !ctx.conveyor->beltMotor()->isMoving(); },
-      6, nullptr, 0
+      5, nullptr, 0
     },
 
-    // Step 6: Head down to pins_touch
+    // Step 5: Head down to pins_touch
     { "pins_touch",
       [](Context &ctx) {
           float target_mm = ctx.recipe->head_pos.pins_touch;
@@ -382,6 +379,19 @@ static StepDef infeed_steps[] = {
       },
       nullptr, nullptr,
       [](Context &ctx) -> bool { return !ctx.head->isMoving(); },
+      6, nullptr, 0
+    },
+
+    // Step 6: Arm RFID (support board from below before contact)
+    { "arm_rfid",
+      [](Context &ctx) {
+          TRACE_ACT("rfid -> POS_A");
+          ctx.rfid->goTo(CylPosition::POS_A);
+          TRACE_WAIT("rfid at POS_A");
+          ctx.wait_desc = "rfid at POS_A";
+      },
+      nullptr, nullptr,
+      [](Context &ctx) -> bool { return ctx.rfid->currentPos() == CylPosition::POS_A; },
       7, nullptr, 0
     },
 
@@ -403,20 +413,7 @@ static StepDef infeed_steps[] = {
       8, nullptr, 0
     },
 
-    // Step 8: Arm RFID
-    { "arm_rfid",
-      [](Context &ctx) {
-          TRACE_ACT("rfid -> POS_A");
-          ctx.rfid->goTo(CylPosition::POS_A);
-          TRACE_WAIT("rfid at POS_A");
-          ctx.wait_desc = "rfid at POS_A";
-      },
-      nullptr, nullptr,
-      [](Context &ctx) -> bool { return ctx.rfid->currentPos() == CylPosition::POS_A; },
-      9, nullptr, 0
-    },
-
-    // Step 9: Arm panel locker
+    // Step 8: Arm panel locker
     { "arm_locker",
       [](Context &ctx) {
           TRACE_ACT("locker -> POS_B");
@@ -426,10 +423,10 @@ static StepDef infeed_steps[] = {
       },
       nullptr, nullptr,
       [](Context &ctx) -> bool { return ctx.locker->currentPos() == CylPosition::POS_B; },
-      10, nullptr, 0
+      9, nullptr, 0
     },
 
-    // Step 10: Test/Program — wait for tester command
+    // Step 9: Test/Program — wait for tester command
     { "testing",
       [](Context &ctx) {
           ctx.test_done = false;
@@ -441,10 +438,10 @@ static StepDef infeed_steps[] = {
       [](Context &ctx) -> bool {
           return ctx.test_done;
       },
-      11, nullptr, 0
+      10, nullptr, 0
     },
 
-    // Step 11: Table up to home
+    // Step 10: Head up to guides_clear
     { "head_up",
       [](Context &ctx) {
           float target_mm = ctx.recipe->head_pos.guides_clear;
@@ -458,10 +455,10 @@ static StepDef infeed_steps[] = {
       },
       nullptr, nullptr,
       [](Context &ctx) -> bool { return !ctx.head->isMoving(); },
-      12, nullptr, 0
+      11, nullptr, 0
     },
 
-    // Step 12: Release RFID
+    // Step 11: Release RFID
     { "release_rfid",
       [](Context &ctx) {
           TRACE_ACT("rfid -> POS_B");
@@ -471,10 +468,10 @@ static StepDef infeed_steps[] = {
       },
       nullptr, nullptr,
       [](Context &ctx) -> bool { return ctx.rfid->currentPos() == CylPosition::POS_B; },
-      13, nullptr, 0
+      12, nullptr, 0
     },
 
-    // Step 13: Release locker
+    // Step 12: Release locker
     { "release_locker",
       [](Context &ctx) {
           TRACE_ACT("locker -> POS_A");
@@ -484,10 +481,10 @@ static StepDef infeed_steps[] = {
       },
       nullptr, nullptr,
       [](Context &ctx) -> bool { return ctx.locker->currentPos() == CylPosition::POS_A; },
-      14, nullptr, 0
+      13, nullptr, 0
     },
 
-    // Step 14: Disarm stopper
+    // Step 13: Disarm stopper
     { "disarm_stopper",
       [](Context &ctx) {
           TRACE_ACT("stopper -> POS_B");
@@ -497,10 +494,10 @@ static StepDef infeed_steps[] = {
       },
       nullptr, nullptr,
       [](Context &ctx) -> bool { return ctx.stopper->currentPos() == CylPosition::POS_B; },
-      15, nullptr, 0
+      14, nullptr, 0
     },
 
-    // Step 15: Convey out
+    // Step 14: Convey out
     { "convey_out",
       [](Context &ctx) {
           uint32_t rpm = ctx.conveyor->beltMmStoRpm(ctx.conveyor->config().convey_out_speed);
@@ -515,10 +512,10 @@ static StepDef infeed_steps[] = {
           ctx.conveyor->stopBelt();
       },
       [](Context &ctx) -> bool { return ctx.conveyor->boardInPosition(); },
-      16, nullptr, 0
+      15, nullptr, 0
     },
 
-    // Step 16: SMEMA handoff downstream — wait for next machine to request board
+    // Step 15: SMEMA handoff downstream — wait for next machine to request board
     { "smema_out",
       [](Context &ctx) {
           TRACE_ACT("conveyor STOPPED at laser3, board ready");
@@ -540,10 +537,10 @@ static StepDef infeed_steps[] = {
       [](Context &ctx) -> bool {
           return !ctx.conveyor->downstream()->machineReady();
       },
-      17, nullptr, 0
+      16, nullptr, 0
     },
 
-    // Step 17: Eject — run until laser3 clears
+    // Step 16: Eject — run until laser3 clears
     { "eject",
       [](Context &ctx) {
           uint32_t rpm = ctx.conveyor->beltMmStoRpm(ctx.conveyor->config().eject_speed);

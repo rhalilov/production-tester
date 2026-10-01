@@ -18,12 +18,11 @@ static int detect_start_step(engine::Context *ctx)
     ctx->conveyor->laser2()->poll();
     ctx->conveyor->laser3()->poll();
 
-    // laser2 has priority — board is at work position
     if (ctx->conveyor->laser2()->raw()) {
-        return 4;   // arm_stopper (board at work position)
+        return 4;   // creep (board at work position)
     }
     if (ctx->conveyor->laser3()->raw()) {
-        return 17;  // eject (board at exit)
+        return 16;  // eject (board at exit)
     }
     if (ctx->conveyor->laser1()->raw()) {
         return 2;   // wait_panel (board entering)
