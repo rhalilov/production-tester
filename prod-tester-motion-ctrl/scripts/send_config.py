@@ -33,7 +33,12 @@ import threading
 import socket
 import os
 import re
-import msvcrt
+if os.name == 'nt':
+    import msvcrt
+else:
+    import tty
+    import termios
+    import select
 
 import serial
 
@@ -283,27 +288,58 @@ def _check_serial_for_boot(ser):
 
 
 def _get_key(ser=None):
-    """Read a single key press (Windows). Checks serial for boot messages while waiting."""
-    while True:
-        if msvcrt.kbhit():
-            ch = msvcrt.getch()
-            if ch in (b'\x00', b'\xe0'):
-                ch2 = msvcrt.getch()
-                if ch2 == b'K':
-                    return '<'
-                elif ch2 == b'M':
-                    return '>'
-                elif ch2 == b'H':
-                    return 'up'
-                elif ch2 == b'P':
-                    return 'down'
-                return None
-            return ch.decode(errors="replace")
-        if ser:
-            _check_serial_for_boot(ser)
-            if _controller_rebooted[0]:
-                return None
-        time.sleep(0.02)
+    """Read a single key press. Cross-platform. Checks serial for boot messages while waiting."""
+    if os.name == 'nt':
+        while True:
+            if msvcrt.kbhit():
+                ch = msvcrt.getch()
+                if ch in (b'\x00', b'\xe0'):
+                    ch2 = msvcrt.getch()
+                    if ch2 == b'K':
+                        return '<'
+                    elif ch2 == b'M':
+                        return '>'
+                    elif ch2 == b'H':
+                        return 'up'
+                    elif ch2 == b'P':
+                        return 'down'
+                    return None
+                return ch.decode(errors="replace")
+            if ser:
+                _check_serial_for_boot(ser)
+                if _controller_rebooted[0]:
+                    return None
+            time.sleep(0.02)
+    else:
+        fd = sys.stdin.fileno()
+        old_settings = termios.tcgetattr(fd)
+        try:
+            tty.setraw(fd)
+            while True:
+                if select.select([sys.stdin], [], [], 0.02)[0]:
+                    ch = sys.stdin.read(1)
+                    if ch == '\x1b':
+                        if select.select([sys.stdin], [], [], 0.05)[0]:
+                            seq = sys.stdin.read(1)
+                            if seq == '[' and select.select([sys.stdin], [], [], 0.05)[0]:
+                                code = sys.stdin.read(1)
+                                if code == 'D':
+                                    return '<'
+                                elif code == 'C':
+                                    return '>'
+                                elif code == 'A':
+                                    return 'up'
+                                elif code == 'B':
+                                    return 'down'
+                            return '\x1b'
+                        return '\x1b'
+                    return ch
+                if ser:
+                    _check_serial_for_boot(ser)
+                    if _controller_rebooted[0]:
+                        return None
+        finally:
+            termios.tcsetattr(fd, termios.TCSADRAIN, old_settings)
 
 
 def _print_header(title, path=None):
@@ -1177,6 +1213,8 @@ def main():
     dump_output = DEFAULT_CONFIG
     tcp_port = DEFAULT_TCP_PORT
 
+    headless = False
+
     args = sys.argv[2:]
     i = 0
     while i < len(args):
@@ -1189,6 +1227,8 @@ def main():
             delay_ms = int(args[i].split("=")[1])
         elif args[i].startswith("--port="):
             tcp_port = int(args[i].split("=")[1])
+        elif args[i] == "--headless":
+            headless = True
         else:
             config_file = args[i]
         i += 1
@@ -1224,7 +1264,12 @@ def main():
         if config_file:
             send_config(ser, config_file, delay_ms)
 
-        console_loop(ser_holder, running)
+        if headless:
+            print("--- Headless mode (TCP proxy only, Ctrl+C to exit) ---")
+            while running[0]:
+                time.sleep(1)
+        else:
+            console_loop(ser_holder, running)
     finally:
         running[0] = False
         ser.close()
